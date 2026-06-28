@@ -11,8 +11,13 @@ import {
   type QueueItem,
   splitFileName,
   validateEditSpec,
-} from "@qlipq/core";
-import { buildExportArgs, parseFfprobe, parseProgress, progressFraction } from "@qlipq/ffmpeg";
+} from "@qcksys/qlipq-core";
+import {
+  buildExportArgs,
+  parseFfprobe,
+  parseProgress,
+  progressFraction,
+} from "@qcksys/qlipq-ffmpeg";
 import * as api from "../lib/api.ts";
 import { joinPath } from "../lib/queue.ts";
 import { AudioPanel } from "./AudioPanel.tsx";

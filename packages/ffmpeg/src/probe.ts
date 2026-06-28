@@ -1,4 +1,4 @@
-import type { AudioStreamInfo, MediaInfo } from "@qlipq/core";
+import type { AudioStreamInfo, MediaInfo } from "@qcksys/qlipq-core";
 
 /** Build the ffprobe argument list that produces parseable JSON for a file. */
 export function buildProbeArgs(inputPath: string): string[] {

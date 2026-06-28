@@ -2,10 +2,32 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "qlipq-website",
   "compatibility_date": "2026-06-01",
-  // Serve the static Astro build directly from Cloudflare's edge.
-  // `wrangler deploy` uploads ./dist as Workers Static Assets.
+  // Base config (used by `wrangler dev` locally and as a workers.dev fallback).
+  // `assets` and `routes` are NOT inherited by named environments, so each env
+  // below redeclares `assets`.
   "assets": {
     "directory": "./dist",
     "not_found_handling": "404-page",
+  },
+  "env": {
+    "dev": {
+      "name": "qlipq-website-dev",
+      "assets": {
+        "directory": "./dist",
+        "not_found_handling": "404-page",
+      },
+      "routes": [{ "pattern": "dev.qlipq.com", "custom_domain": true }],
+    },
+    "production": {
+      "name": "qlipq-website-prod",
+      "assets": {
+        "directory": "./dist",
+        "not_found_handling": "404-page",
+      },
+      "routes": [
+        { "pattern": "qlipq.com", "custom_domain": true },
+        { "pattern": "www.qlipq.com", "custom_domain": true },
+      ],
+    },
   },
 }

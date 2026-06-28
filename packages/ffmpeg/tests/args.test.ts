@@ -1,5 +1,5 @@
 import { expect, test } from "vite-plus/test";
-import type { EditSpec } from "@qlipq/core";
+import type { EditSpec } from "@qcksys/qlipq-core";
 import { buildExportArgs } from "../src/args.ts";
 
 const io = { inputPath: "in.mkv", outputPath: "out.mp4" };

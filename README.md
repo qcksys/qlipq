@@ -14,8 +14,8 @@ apps/
   app/        Tauri desktop app — React + TypeScript frontend, Rust backend
   website/    Astro content site (user guide + download), Cloudflare Workers
 packages/
-  core/       @qlipq/core   — domain model, config, OBS filename parsing, renaming
-  ffmpeg/     @qlipq/ffmpeg — ffmpeg/ffprobe command builders + output parsers
+  core/       @qcksys/qlipq-core   — domain model, config, OBS filename parsing, renaming
+  ffmpeg/     @qcksys/qlipq-ffmpeg — ffmpeg/ffprobe command builders + output parsers
 ```
 
 ### What about `plugin-obs`?
@@ -23,7 +23,7 @@ packages/
 The original plan included an OBS plugin to attach metadata to recordings. After
 review this was **confirmed unnecessary**: OBS already writes a timestamp (and
 optionally a scene/game prefix) into the filename, and qlipq derives the rest
-with `ffprobe`. `@qlipq/core`'s `parseObsFilename` extracts the recorded time and
+with `ffprobe`. `@qcksys/qlipq-core`'s `parseObsFilename` extracts the recorded time and
 source label from the name, so no native OBS plugin is required. The website's
 [OBS replay buffer guide](apps/website/src/pages/guide/obs-replay-buffer.astro)
 explains the recommended OBS-side setup instead.
@@ -71,11 +71,14 @@ vp run qlipq-website#build      # static build into apps/website/dist
 
 - **Changesets** version the shared packages. Record a change with
   `vp run changeset`; merging to `main` opens a "Version Packages" PR, and
-  merging that publishes `@qlipq/core` and `@qlipq/ffmpeg`.
+  merging that publishes `@qcksys/qlipq-core` and `@qcksys/qlipq-ffmpeg`.
 - **GitHub Actions** (`.github/workflows/`):
   - `ci.yml` — check, test, and build on every push/PR.
   - `release.yml` — changesets versioning/publishing (needs `NPM_TOKEN`).
   - `deploy-website.yml` — deploys the site to Cloudflare Workers
-    (needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`).
+    (needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`). Pushes to
+    `main` deploy **production** (`qlipq.com`); pushes to `dev` deploy the
+    **dev** environment (`dev.qlipq.com`); `workflow_dispatch` lets you pick.
+    Locally: `pnpm -C apps/website deploy:dev` / `deploy:prod`.
   - `build-app.yml` — builds the desktop app on Windows/macOS/Linux and
     attaches installers to a GitHub release when a `v*` tag is pushed.

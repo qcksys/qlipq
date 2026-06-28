@@ -1,4 +1,4 @@
-import type { AppConfig } from "@qlipq/core";
+import type { AppConfig } from "@qcksys/qlipq-core";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -18,7 +18,7 @@ export function scanFolders(folders: string[], extensions: string[]): Promise<st
   return invoke<string[]>("scan_folders", { folders, extensions });
 }
 
-/** Run ffprobe and return its raw JSON output for parsing with `@qlipq/ffmpeg`. */
+/** Run ffprobe and return its raw JSON output for parsing with `@qcksys/qlipq-ffmpeg`. */
 export function probeRaw(path: string, ffprobePath: string): Promise<string> {
   return invoke<string>("probe_raw", { path, ffprobePath });
 }
@@ -38,7 +38,7 @@ export function startWatching(folders: string[], extensions: string[]): Promise<
 }
 
 /**
- * Run ffmpeg with a pre-built argument list (see `@qlipq/ffmpeg`). Resolves when
+ * Run ffmpeg with a pre-built argument list (see `@qcksys/qlipq-ffmpeg`). Resolves when
  * the process exits successfully and rejects with stderr otherwise. Progress is
  * delivered via {@link onExportProgress} events keyed by `id`.
  */

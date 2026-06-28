@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { buildRenamedFileName, type QueueItem, splitFileName } from "@qlipq/core";
+import { buildRenamedFileName, type QueueItem, splitFileName } from "@qcksys/qlipq-core";
 
 interface RenameModalProps {
   item: QueueItem;

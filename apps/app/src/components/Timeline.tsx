@@ -1,4 +1,4 @@
-import { formatDuration, type TrimSpec } from "@qlipq/core";
+import { formatDuration, type TrimSpec } from "@qcksys/qlipq-core";
 
 interface TimelineProps {
   duration: number;

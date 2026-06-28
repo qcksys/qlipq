@@ -1,4 +1,4 @@
-import { formatDate, formatTime, type QueueItem, type QueueStatus } from "@qlipq/core";
+import { formatDate, formatTime, type QueueItem, type QueueStatus } from "@qcksys/qlipq-core";
 
 interface QueueListProps {
   items: QueueItem[];

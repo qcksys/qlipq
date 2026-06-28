@@ -2,15 +2,21 @@ name: Deploy website
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - "apps/website/**"
       - "pnpm-lock.yaml"
       - ".github/workflows/deploy-website.yml"
   workflow_dispatch:
+    inputs:
+      environment:
+        description: Cloudflare environment to deploy
+        type: choice
+        options: [dev, production]
+        default: dev
 
 concurrency:
-  group: deploy-website
+  group: deploy-website-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -29,10 +35,22 @@ jobs:
       - name: Build website
         run: vp run qlipq-website#build
 
-      - name: Deploy to Cloudflare Workers
+      # main → production, dev branch → dev, manual dispatch → chosen input.
+      - name: Resolve environment
+        id: env
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "name=production" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy to Cloudflare Workers (${{ steps.env.outputs.name }})
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: apps/website
-          command: deploy
+          command: deploy --env ${{ steps.env.outputs.name }}

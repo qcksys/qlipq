@@ -8,7 +8,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "check": "astro check",
-    "deploy": "astro build && wrangler deploy"
+    "deploy:dev": "astro build && wrangler deploy --env dev",
+    "deploy:prod": "astro build && wrangler deploy --env production"
   },
   "dependencies": {
     "astro": "^5"

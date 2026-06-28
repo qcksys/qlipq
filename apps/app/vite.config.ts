@@ -23,7 +23,7 @@ export default defineConfig({
   // Workspace packages are shipped as TypeScript source; let Vite transpile them
   // instead of trying to pre-bundle them.
   optimizeDeps: {
-    exclude: ["@qlipq/core", "@qlipq/ffmpeg"],
+    exclude: ["@qcksys/qlipq-core", "@qcksys/qlipq-ffmpeg"],
   },
 
   // es2022 is supported by every modern Tauri webview (WebView2 / recent

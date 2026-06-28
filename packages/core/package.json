@@ -1,5 +1,5 @@
 {
-  "name": "@qlipq/core",
+  "name": "@qcksys/qlipq-core",
   "version": "0.0.0",
   "description": "Shared domain model, config, and helpers for qlipq.",
   "license": "MIT",

@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type AppConfig, DEFAULT_CONFIG, parseObsFilename, type QueueItem } from "@qlipq/core";
+import {
+  type AppConfig,
+  DEFAULT_CONFIG,
+  parseObsFilename,
+  type QueueItem,
+} from "@qcksys/qlipq-core";
 import { ConfigPanel } from "./components/ConfigPanel.tsx";
 import { Editor } from "./components/Editor.tsx";
 import { QueueList } from "./components/QueueList.tsx";

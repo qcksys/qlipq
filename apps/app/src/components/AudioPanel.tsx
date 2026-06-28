@@ -1,4 +1,4 @@
-import { type AudioStreamInfo, audioStreamLabel, type AudioTrackSpec } from "@qlipq/core";
+import { type AudioStreamInfo, audioStreamLabel, type AudioTrackSpec } from "@qcksys/qlipq-core";
 
 interface AudioPanelProps {
   streams: AudioStreamInfo[];

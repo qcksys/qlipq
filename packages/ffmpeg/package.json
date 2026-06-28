@@ -1,5 +1,5 @@
 {
-  "name": "@qlipq/ffmpeg",
+  "name": "@qcksys/qlipq-ffmpeg",
   "version": "0.0.0",
   "description": "Pure ffmpeg/ffprobe command builders and output parsers for qlipq.",
   "license": "MIT",
@@ -30,7 +30,7 @@
     "check": "vp check"
   },
   "dependencies": {
-    "@qlipq/core": "workspace:*"
+    "@qcksys/qlipq-core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",

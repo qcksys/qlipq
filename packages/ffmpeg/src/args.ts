@@ -1,4 +1,4 @@
-import type { EditSpec } from "@qlipq/core";
+import type { EditSpec } from "@qcksys/qlipq-core";
 
 export interface VideoEncodeOptions {
   codec?: string;

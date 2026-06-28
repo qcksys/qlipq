@@ -1,6 +1,6 @@
 ---
-"@qlipq/core": minor
-"@qlipq/ffmpeg": minor
+"@qcksys/qlipq-core": minor
+"@qcksys/qlipq-ffmpeg": minor
 ---
 
 Initial release of the shared packages: domain model (queue, edit spec, media

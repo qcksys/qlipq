@@ -1,4 +1,4 @@
-import { createId, parseObsFilename, type QueueItem } from "@qlipq/core";
+import { createId, parseObsFilename, type QueueItem } from "@qcksys/qlipq-core";
 
 /** Last path segment for both Windows and POSIX separators. */
 export function basename(path: string): string {

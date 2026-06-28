@@ -1,4 +1,4 @@
-import type { AppConfig } from "@qlipq/core";
+import type { AppConfig } from "@qcksys/qlipq-core";
 import * as api from "../lib/api.ts";
 
 interface ConfigPanelProps {

@@ -35,10 +35,10 @@ importers:
 
   apps/app:
     dependencies:
-      '@qlipq/core':
+      '@qcksys/qlipq-core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@qlipq/ffmpeg':
+      '@qcksys/qlipq-ffmpeg':
         specifier: workspace:*
         version: link:../../packages/ffmpeg
       '@tauri-apps/api':
@@ -112,7 +112,7 @@ importers:
 
   packages/ffmpeg:
     dependencies:
-      '@qlipq/core':
+      '@qcksys/qlipq-core':
         specifier: workspace:*
         version: link:../core
     devDependencies:

@@ -12,8 +12,8 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
-    "@qlipq/core": "workspace:*",
-    "@qlipq/ffmpeg": "workspace:*",
+    "@qcksys/qlipq-core": "workspace:*",
+    "@qcksys/qlipq-ffmpeg": "workspace:*",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-opener": "^2",

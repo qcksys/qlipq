@@ -7,7 +7,7 @@ use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-/// Persisted configuration. Field names mirror `@qlipq/core`'s `AppConfig`
+/// Persisted configuration. Field names mirror `@qcksys/qlipq-core`'s `AppConfig`
 /// (camelCase over the IPC boundary).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -99,16 +99,14 @@ fn scan_folders(folders: Vec<String>, extensions: Vec<String>) -> Vec<String> {
 
 /// Build a Command, hiding the console window on Windows.
 fn hidden_command(program: &str) -> Command {
-    let cmd = Command::new(program);
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(program);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let mut cmd = cmd;
         cmd.creation_flags(CREATE_NO_WINDOW);
-        return cmd;
     }
-    #[cfg(not(windows))]
     cmd
 }
 
@@ -160,7 +158,12 @@ async fn run_export(
 
 /// Spawn ffmpeg, stream `-progress` lines to the frontend, and collect stderr
 /// on a separate thread to avoid pipe-buffer deadlocks.
-fn run_ffmpeg(app: AppHandle, id: String, ffmpeg_path: String, args: Vec<String>) -> Result<(), String> {
+fn run_ffmpeg(
+    app: AppHandle,
+    id: String,
+    ffmpeg_path: String,
+    args: Vec<String>,
+) -> Result<(), String> {
     let mut child = hidden_command(&ffmpeg_path)
         .args(&args)
         .stdout(Stdio::piped())
@@ -195,7 +198,9 @@ fn run_ffmpeg(app: AppHandle, id: String, ffmpeg_path: String, args: Vec<String>
     if status.success() {
         Ok(())
     } else {
-        let tail: String = stderr_text.lines().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+        // Surface the last few stderr lines (ffmpeg puts the real error there).
+        let lines: Vec<&str> = stderr_text.lines().collect();
+        let tail = lines[lines.len().saturating_sub(8)..].join("\n");
         Err(if tail.is_empty() {
             format!("ffmpeg exited with status {status}")
         } else {
