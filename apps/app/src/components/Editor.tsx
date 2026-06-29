@@ -19,6 +19,7 @@ import {
 } from "@qcksys/qlipq-core";
 import {
   buildExportArgs,
+  buildProxyArgs,
   estimateExportSize,
   outputSettingsToEncode,
   parseFfprobe,
@@ -56,6 +57,11 @@ import {
 // Player position is remembered per file so reopening a clip resumes where you left off.
 const PLAYBACK_PREFIX = "qlipq.playback:";
 
+// Containers/codecs WebView2's <video> can play directly; anything else previews via a
+// generated proxy (MKV → remux, HEVC → small transcode). Exports always use the original.
+const DIRECT_EXTS = ["mp4", "mov", "m4v", "webm"];
+const DIRECT_CODECS = ["h264", "avc1", "vp9", "vp8", "av1"];
+
 interface EditorProps {
   item: QueueItem;
   config: AppConfig;
@@ -81,6 +87,8 @@ export function Editor({ item, config, onPatch, audioDefaults, onAudioDefaults }
   const [newTag, setNewTag] = useState("");
   const [overwriteTarget, setOverwriteTarget] = useState<string | null>(null);
   const [afterPromptOpen, setAfterPromptOpen] = useState(false);
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [preparingPreview, setPreparingPreview] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // Read via refs inside the probe effect so updating them doesn't re-probe.
@@ -98,6 +106,8 @@ export function Editor({ item, config, onPatch, audioDefaults, onAudioDefaults }
     setMedia(null);
     setLoadError(null);
     setCurrentTime(0);
+    setPreviewSrc(null);
+    setPreparingPreview(false);
     api
       .probeRaw(item.path, config.ffprobePath)
       .then((raw) => {
@@ -132,6 +142,77 @@ export function Editor({ item, config, onPatch, audioDefaults, onAudioDefaults }
       cancelled = true;
     };
   }, [item.id, item.path, config.ffprobePath, onPatch]);
+
+  // Signature of the audio selection (enabled tracks + volumes), used to key the proxy.
+  const audioSig = useMemo(
+    () => spec.audioTracks.map((t) => `${t.index}:${t.enabled ? 1 : 0}:${t.volume}`).join(","),
+    [spec.audioTracks],
+  );
+
+  // Build/choose the preview source. Single-track clips play directly (the element
+  // applies volume/mute); multi-track clips bake the selected mix into the proxy.
+  useEffect(() => {
+    if (!media) return;
+    let cancelled = false;
+    const ext = item.fileName.split(".").pop()?.toLowerCase() ?? "";
+    const codec = media.videoCodec.toLowerCase();
+    const videoDirect = DIRECT_EXTS.includes(ext) && DIRECT_CODECS.includes(codec);
+    const multiTrack = media.audioStreams.length > 1;
+
+    if (videoDirect && !multiTrack) {
+      setPreviewSrc(api.fileUrl(item.path));
+      setPreparingPreview(false);
+      return;
+    }
+
+    const transcode = !DIRECT_CODECS.includes(codec);
+    const key = multiTrack ? `${item.path}|${audioSig}` : item.path;
+    const run = async () => {
+      try {
+        const proxy = await api.proxyPath(key);
+        if (!(await api.fileExists(proxy))) {
+          if (!cancelled) setPreparingPreview(true);
+          await api.runFfmpeg(
+            config.ffmpegPath,
+            buildProxyArgs({
+              inputPath: item.path,
+              outputPath: proxy,
+              transcode,
+              audioTracks: multiTrack ? spec.audioTracks : undefined,
+            }),
+          );
+        }
+        if (!cancelled) setPreviewSrc(api.fileUrl(proxy));
+      } catch (err) {
+        console.error("preview proxy failed", err);
+        if (!cancelled) setPreviewSrc(api.fileUrl(item.path)); // best-effort fallback
+      } finally {
+        if (!cancelled) setPreparingPreview(false);
+      }
+    };
+    // Debounce when the audio mix changes (multi-track) so volume drags don't thrash.
+    const handle = setTimeout(run, multiTrack ? 400 : 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [media, item.path, item.fileName, audioSig, spec.audioTracks, config.ffmpegPath]);
+
+  // Single-track clips: reflect enable/volume on the element directly (instant, no
+  // re-encode). Multi-track clips have the mix baked into the proxy, so leave at unity.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !media) return;
+    if (media.audioStreams.length !== 1) {
+      v.muted = false;
+      v.volume = 1;
+      return;
+    }
+    const only = media.audioStreams[0];
+    const track = spec.audioTracks.find((t) => t.index === only.index);
+    v.muted = track ? !track.enabled : false;
+    v.volume = track ? Math.min(1, Math.max(0, track.volume)) : 1;
+  }, [spec.audioTracks, media, previewSrc]);
 
   // Autosave the working edit to the queue item (debounced) so it survives tab
   // switches and app restarts. Guarded so a stale spec isn't written mid-switch.
@@ -306,25 +387,31 @@ export function Editor({ item, config, onPatch, audioDefaults, onAudioDefaults }
   return (
     <div className="flex flex-col gap-4 p-4">
       <div className="overflow-hidden rounded-xl border border-border bg-black">
-        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-        <video
-          ref={videoRef}
-          className="max-h-[48vh] w-full"
-          src={api.fileUrl(item.path)}
-          controls
-          onLoadedMetadata={(e) => {
-            const saved = Number(localStorage.getItem(PLAYBACK_PREFIX + item.path) ?? 0);
-            if (saved > 0 && saved < e.currentTarget.duration) {
-              e.currentTarget.currentTime = saved;
-              setCurrentTime(saved);
-            }
-          }}
-          onTimeUpdate={(e) => {
-            const t = e.currentTarget.currentTime;
-            setCurrentTime(t);
-            localStorage.setItem(PLAYBACK_PREFIX + item.path, String(t));
-          }}
-        />
+        {preparingPreview ? (
+          <div className="flex h-[48vh] w-full items-center justify-center text-sm text-muted-foreground">
+            Preparing preview…
+          </div>
+        ) : (
+          /* eslint-disable-next-line jsx-a11y/media-has-caption */
+          <video
+            ref={videoRef}
+            className="max-h-[48vh] w-full"
+            src={previewSrc ?? undefined}
+            controls
+            onLoadedMetadata={(e) => {
+              const saved = Number(localStorage.getItem(PLAYBACK_PREFIX + item.path) ?? 0);
+              if (saved > 0 && saved < e.currentTarget.duration) {
+                e.currentTarget.currentTime = saved;
+                setCurrentTime(saved);
+              }
+            }}
+            onTimeUpdate={(e) => {
+              const t = e.currentTarget.currentTime;
+              setCurrentTime(t);
+              localStorage.setItem(PLAYBACK_PREFIX + item.path, String(t));
+            }}
+          />
+        )}
       </div>
 
       <div className="flex items-center justify-center gap-1">

@@ -515,6 +515,40 @@ fn file_exists(path: String) -> bool {
     Path::new(&path).is_file()
 }
 
+/// Deterministic path for a preview proxy of `input`, under the app data dir. Stable
+/// across runs (fixed-key hash) so an existing proxy is reused.
+#[tauri::command]
+fn proxy_path(app: AppHandle, input: String) -> Result<String, String> {
+    use std::hash::{Hash, Hasher};
+    let dir = data_dir(&app)?.join("proxies");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    input.hash(&mut hasher);
+    Ok(dir
+        .join(format!("{:x}.mp4", hasher.finish()))
+        .to_string_lossy()
+        .to_string())
+}
+
+/// Run ffmpeg to completion (no progress streaming) — used to build preview proxies.
+#[tauri::command]
+async fn run_ffmpeg_blocking(ffmpeg_path: String, args: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = hidden_command(&ffmpeg_path)
+            .args(&args)
+            .output()
+            .map_err(|e| format!("Failed to run ffmpeg ({ffmpeg_path}): {e}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let lines: Vec<&str> = stderr.lines().collect();
+        Err(lines[lines.len().saturating_sub(8)..].join("\n"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn delete_file(path: String) -> Result<(), String> {
     std::fs::remove_file(&path).map_err(|e| e.to_string())
@@ -636,6 +670,8 @@ pub fn run() {
             write_app_file,
             file_info,
             file_exists,
+            proxy_path,
+            run_ffmpeg_blocking,
             check_binary,
             scan_folders,
             read_obs_config,

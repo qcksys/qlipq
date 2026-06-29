@@ -46,6 +46,16 @@ export function fileExists(path: string): Promise<boolean> {
   return invoke<boolean>("file_exists", { path });
 }
 
+/** Deterministic path for a webview-playable preview proxy of the given source. */
+export function proxyPath(input: string): Promise<string> {
+  return invoke<string>("proxy_path", { input });
+}
+
+/** Run ffmpeg to completion (no progress) — used to build a preview proxy. */
+export function runFfmpeg(ffmpegPath: string, args: string[]): Promise<void> {
+  return invoke("run_ffmpeg_blocking", { ffmpegPath, args });
+}
+
 /** Read a named file from the app data dir (null if absent). */
 export function readAppFile(name: string): Promise<string | null> {
   return invoke<string | null>("read_app_file", { name });
