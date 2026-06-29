@@ -3,13 +3,13 @@ import Base from "../../layouts/Base.astro";
 const base = import.meta.env.BASE_URL.replace(/\/$/, "");
 ---
 
-<Base title="Getting started with qlipq" description="Install qlipq and export your first clip.">
+<Base title="Getting started with QlipQ" description="Install QlipQ and export your first clip.">
   <article class="prose">
     <h1>Getting started</h1>
 
     <h2>1. Install FFmpeg</h2>
     <p>
-      qlipq shells out to <code>ffmpeg</code> and <code>ffprobe</code> for probing and exporting.
+      QlipQ shells out to <code>ffmpeg</code> and <code>ffprobe</code> for probing and exporting.
       Install FFmpeg and ensure it is available on your <code>PATH</code>:
     </p>
     <ul>
@@ -18,14 +18,14 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, "");
       <li><strong>Linux:</strong> <code>sudo apt install ffmpeg</code></li>
     </ul>
     <p>
-      If FFmpeg is not on your <code>PATH</code>, open qlipq's <strong>Settings</strong> and set the
+      If FFmpeg is not on your <code>PATH</code>, open QlipQ's <strong>Settings</strong> and set the
       full paths to the <code>ffmpeg</code> and <code>ffprobe</code> binaries.
     </p>
 
     <h2>2. Add watched folders</h2>
     <p>
       In <strong>Settings → Watched folders</strong>, add the folder(s) where your recordings land
-      (for OBS this is your recording or replay-buffer output path). qlipq scans them on launch and
+      (for OBS this is your recording or replay-buffer output path). QlipQ scans them on launch and
       watches for new files while it runs.
     </p>
 

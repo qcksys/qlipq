@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
@@ -80,21 +81,110 @@ fn has_video_ext(path: &Path, extensions: &[String]) -> bool {
         .unwrap_or(false)
 }
 
+/// Recursively collect video files in the given folders and all their subfolders
+/// (NVIDIA Share, for one, nests recordings in per-game subfolders). Iterative to
+/// avoid deep recursion; uses `file_type()` so symlinked dirs are not followed.
 #[tauri::command]
 fn scan_folders(folders: Vec<String>, extensions: Vec<String>) -> Vec<String> {
     let mut found = Vec::new();
-    for folder in folders {
-        let Ok(entries) = std::fs::read_dir(&folder) else {
+    let mut stack: Vec<PathBuf> = folders.into_iter().map(PathBuf::from).collect();
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() && has_video_ext(&path, &extensions) {
-                found.push(path.to_string_lossy().to_string());
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                stack.push(entry.path());
+            } else if file_type.is_file() && has_video_ext(&entry.path(), &extensions) {
+                found.push(entry.path().to_string_lossy().to_string());
             }
         }
     }
     found
+}
+
+/// Raw OBS config files for the frontend to parse with `@qcksys/qlipq-core`'s
+/// `detectObsRecordingFolder`. Empty when OBS is not installed.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ObsConfigFiles {
+    user_ini: Option<String>,
+    profiles: HashMap<String, String>,
+}
+
+/// Read OBS's `user.ini` and every profile's `basic.ini` from the standard config
+/// directory (`%APPDATA%/obs-studio` on Windows). Returns raw text; parsing lives
+/// in the core package. Missing files/dirs yield empty fields, never an error.
+#[tauri::command]
+fn read_obs_config(app: AppHandle) -> Result<ObsConfigFiles, String> {
+    let base = app
+        .path()
+        .config_dir()
+        .map_err(|e| e.to_string())?
+        .join("obs-studio");
+
+    let mut files = ObsConfigFiles::default();
+    if let Ok(text) = std::fs::read_to_string(base.join("user.ini")) {
+        files.user_ini = Some(text);
+    }
+
+    let profiles_dir = base.join("basic").join("profiles");
+    if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if let Ok(text) = std::fs::read_to_string(path.join("basic.ini")) {
+                files.profiles.insert(name.to_string(), text);
+            }
+        }
+    }
+
+    Ok(files)
+}
+
+/// The folder NVIDIA Share (ShadowPlay) records into. It is not stored in any
+/// plaintext config — only in the registry as a `REG_BINARY` UTF-16LE string at
+/// `HKCU\Software\NVIDIA Corporation\Global\ShadowPlay\NVSPCAPS\DefaultPathW`.
+/// Returns `None` off Windows or when NVIDIA Share is not present.
+#[tauri::command]
+fn detect_nvidia_recording_dir() -> Option<String> {
+    #[cfg(windows)]
+    {
+        read_nvidia_default_path()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn read_nvidia_default_path() -> Option<String> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    let key = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\NVIDIA Corporation\Global\ShadowPlay\NVSPCAPS")
+        .ok()?;
+    let raw = key.get_raw_value("DefaultPathW").ok()?;
+
+    let utf16: Vec<u16> = raw
+        .bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    let decoded = String::from_utf16_lossy(&utf16);
+    let trimmed = decoded.trim_end_matches('\0').trim();
+
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// Build a Command, hiding the console window on Windows.
@@ -233,8 +323,9 @@ fn start_watching(
     .map_err(|e| e.to_string())?;
 
     for folder in &folders {
-        // Ignore individual folder failures (e.g. a path that no longer exists).
-        let _ = watcher.watch(Path::new(folder), RecursiveMode::NonRecursive);
+        // Recursive so new files in subfolders (e.g. NVIDIA Share's per-game dirs)
+        // are detected live. Ignore individual folder failures (e.g. a missing path).
+        let _ = watcher.watch(Path::new(folder), RecursiveMode::Recursive);
     }
 
     *state.0.lock().map_err(|e| e.to_string())? = Some(watcher);
@@ -251,6 +342,8 @@ pub fn run() {
             get_config,
             set_config,
             scan_folders,
+            read_obs_config,
+            detect_nvidia_recording_dir,
             probe_raw,
             rename_file,
             delete_file,

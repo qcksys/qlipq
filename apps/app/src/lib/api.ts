@@ -1,8 +1,9 @@
-import type { AppConfig } from "@qcksys/qlipq-core";
+import { type AppConfig, detectObsRecordingFolder, type ObsConfigFiles } from "@qcksys/qlipq-core";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { toPosixPath } from "./queue.ts";
 
 /** Load persisted configuration (merged with defaults on the Rust side). */
 export function getConfig(): Promise<AppConfig> {
@@ -13,9 +14,48 @@ export function setConfig(config: AppConfig): Promise<void> {
   return invoke("set_config", { config });
 }
 
-/** List existing video files in the given folders (non-recursive per OBS layout). */
+/** List existing video files in the given folders and all their subfolders. */
 export function scanFolders(folders: string[], extensions: string[]): Promise<string[]> {
   return invoke<string[]>("scan_folders", { folders, extensions });
+}
+
+/** Detected capture-app recording folders, used to offer one-click watch presets. */
+export interface CapturePresets {
+  /** OBS recording folder, from its profile's `basic.ini`. */
+  obs?: string;
+  /** NVIDIA Share (ShadowPlay) recording folder, from the registry. */
+  nvidiaShare?: string;
+}
+
+/** Raw OBS config files (`user.ini` + each profile's `basic.ini`). */
+function readObsConfig(): Promise<ObsConfigFiles> {
+  return invoke<ObsConfigFiles>("read_obs_config");
+}
+
+/** NVIDIA Share recording folder from the registry, or null if unavailable. */
+function detectNvidiaRecordingDir(): Promise<string | null> {
+  return invoke<string | null>("detect_nvidia_recording_dir");
+}
+
+/**
+ * Detect OBS and NVIDIA Share recording folders to offer as watch-folder presets.
+ * Each source is probed independently; a failure in one leaves the other intact.
+ */
+export async function detectCapturePresets(): Promise<CapturePresets> {
+  const presets: CapturePresets = {};
+  try {
+    const obs = detectObsRecordingFolder(await readObsConfig());
+    if (obs) presets.obs = toPosixPath(obs);
+  } catch (err) {
+    console.error("OBS preset detection failed", err);
+  }
+  try {
+    const nvidia = await detectNvidiaRecordingDir();
+    if (nvidia) presets.nvidiaShare = toPosixPath(nvidia);
+  } catch (err) {
+    console.error("NVIDIA preset detection failed", err);
+  }
+  return presets;
 }
 
 /** Run ffprobe and return its raw JSON output for parsing with `@qcksys/qlipq-ffmpeg`. */
@@ -54,7 +94,7 @@ export function fileUrl(path: string): string {
 /** Open a native folder picker; returns the chosen path or null. */
 export async function pickFolder(): Promise<string | null> {
   const result = await openDialog({ directory: true, multiple: false });
-  return typeof result === "string" ? result : null;
+  return typeof result === "string" ? toPosixPath(result) : null;
 }
 
 export function revealInExplorer(path: string): Promise<void> {

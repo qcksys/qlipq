@@ -1,17 +1,31 @@
 import type { AppConfig } from "@qcksys/qlipq-core";
+import type { CapturePresets } from "../lib/api.ts";
 import * as api from "../lib/api.ts";
 
 interface ConfigPanelProps {
   config: AppConfig;
   dirty: boolean;
+  presets: CapturePresets;
   onChange: (patch: Partial<AppConfig>) => void;
   onSave: () => void;
+  onReprocess: (folder: string) => void;
 }
 
-export function ConfigPanel({ config, dirty, onChange, onSave }: ConfigPanelProps) {
+export function ConfigPanel({
+  config,
+  dirty,
+  presets,
+  onChange,
+  onSave,
+  onReprocess,
+}: ConfigPanelProps) {
   const addFolder = async () => {
     const folder = await api.pickFolder();
-    if (folder && !config.watchedFolders.includes(folder)) {
+    if (folder) addWatchedFolder(folder);
+  };
+
+  const addWatchedFolder = (folder: string) => {
+    if (!config.watchedFolders.includes(folder)) {
       onChange({ watchedFolders: [...config.watchedFolders, folder] });
     }
   };
@@ -19,6 +33,11 @@ export function ConfigPanel({ config, dirty, onChange, onSave }: ConfigPanelProp
   const removeFolder = (folder: string) => {
     onChange({ watchedFolders: config.watchedFolders.filter((f) => f !== folder) });
   };
+
+  const presetOptions: Array<{ label: string; folder: string }> = [
+    ...(presets.obs ? [{ label: "OBS", folder: presets.obs }] : []),
+    ...(presets.nvidiaShare ? [{ label: "NVIDIA Share", folder: presets.nvidiaShare }] : []),
+  ].filter((p) => !config.watchedFolders.includes(p.folder));
 
   const pickOutput = async () => {
     const folder = await api.pickFolder();
@@ -34,16 +53,33 @@ export function ConfigPanel({ config, dirty, onChange, onSave }: ConfigPanelProp
           {config.watchedFolders.map((folder) => (
             <li key={folder}>
               <span title={folder}>{folder}</span>
-              <button type="button" className="link" onClick={() => removeFolder(folder)}>
-                Remove
-              </button>
+              <span className="folder-actions">
+                <button type="button" className="link" onClick={() => onReprocess(folder)}>
+                  Reprocess
+                </button>
+                <button type="button" className="link" onClick={() => removeFolder(folder)}>
+                  Remove
+                </button>
+              </span>
             </li>
           ))}
           {config.watchedFolders.length === 0 && <li className="muted">None yet.</li>}
         </ul>
-        <button type="button" onClick={addFolder}>
-          Add folder…
-        </button>
+        <div className="row wrap">
+          <button type="button" onClick={addFolder}>
+            Add folder…
+          </button>
+          {presetOptions.map((preset) => (
+            <button
+              key={preset.folder}
+              type="button"
+              title={preset.folder}
+              onClick={() => addWatchedFolder(preset.folder)}
+            >
+              + {preset.label} ({preset.folder})
+            </button>
+          ))}
+        </div>
       </section>
 
       <section>

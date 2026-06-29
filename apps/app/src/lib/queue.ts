@@ -1,5 +1,10 @@
 import { createId, parseObsFilename, type QueueItem } from "@qcksys/qlipq-core";
 
+/** Normalize a path to forward slashes — the separator qlipq uses everywhere. */
+export function toPosixPath(path: string): string {
+  return path.replace(/\\/g, "/");
+}
+
 /** Last path segment for both Windows and POSIX separators. */
 export function basename(path: string): string {
   const normalized = path.replace(/\\/g, "/");

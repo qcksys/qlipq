@@ -172,6 +172,11 @@ body {
 .cta {
   margin: 16px 8px;
 }
+.queue-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 4px 8px;
+}
 
 /* Badges */
 .badge {
@@ -401,6 +406,12 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.folder-actions {
+  display: flex;
+  gap: 12px;
+  flex: none;
+  overflow: visible;
+}
 
 /* Forms */
 input[type="text"],
@@ -417,6 +428,9 @@ input[type="number"] {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+.row.wrap {
+  flex-wrap: wrap;
 }
 .inline {
   display: flex;
