@@ -26,6 +26,15 @@ capture: it watches capture folders, queues new recordings, and offers a focused
 editor to trim, crop, pick audio tracks, rename, and export. Vite+ monorepo of a
 Tauri desktop app, an Astro website, and two shared TS packages.
 
+> **Desktop migration (in progress): Tauri → C# / WinUI 3 + LibVLCSharp.** A native
+> Windows rewrite lives in **`desktop/`** (its own .NET solution, _not_ a pnpm
+> workspace member — see [desktop/README.md](desktop/README.md)). `Qlipq.Core` /
+> `Qlipq.Ffmpeg` are C# ports of the two shared TS packages with **ported parity
+> tests**; the TS packages stay as the parity oracle. Preview proxies were dropped
+> (LibVLC plays MKV/HEVC natively). The Tauri app under `apps/app` is **superseded**
+> and should be removed once the WinUI app is validated on a real machine. Until
+> then both exist; the sections below describe the original Tauri app.
+
 ## Architecture (the parts that span files)
 
 **FFmpeg command logic lives in exactly one place: `@qcksys/qlipq-ffmpeg`.** This
