@@ -66,7 +66,8 @@ impl App {
             }
             col = col.push(container(empty).width(Length::Fill).height(Length::Fill).padding(theme::XL).center_x(Length::Fill).center_y(Length::Fill));
         } else {
-            let mut list = column![].spacing(theme::SM);
+            // Right padding keeps the cards (and their Delete buttons) clear of the scrollbar.
+            let mut list = column![].spacing(theme::SM).padding(iced::Padding::from(0.0).right(theme::MD));
             for item in visible {
                 list = list.push(self.queue_card(item));
             }
@@ -143,42 +144,20 @@ impl App {
             return container(text("…")).into();
         };
 
-        // Preview frame — a custom `shader` widget backed by a persistent wgpu texture, framed in a
-        // panel so the letterbox reads as intentional. Sized to the source aspect ratio.
-        let preview_inner: Element<Message> = if ed.has_frame {
-            let aspect = if media.height > 0 { media.width as f32 / media.height as f32 } else { 16.0 / 9.0 };
-            container(
-                shader(video::VideoProgram::new(ed.shared_frame.clone()))
-                    .width(Length::Fixed(360.0 * aspect))
-                    .height(Length::Fixed(360.0)),
-            )
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into()
-        } else {
-            container(text("Preparing preview…").size(theme::LABEL).style(|t| text::Style { color: Some(theme::muted(t)) }))
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
-                .into()
-        };
-        let preview = container(preview_inner).width(Length::Fill).height(Length::Fixed(360.0)).style(theme::panel);
+        // Preview pane (scalable; double-click toggles fullscreen) + a zoom / fullscreen toolbar.
+        let preview = preview_pane(ed, media, Length::Fixed(360.0 * self.preview_scale));
+        let zoom = (self.preview_scale * 100.0).round() as i32;
+        let preview_tools = row![
+            Space::new().width(Length::Fill),
+            button(text("−").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::PreviewZoom(-0.25)),
+            text(format!("{zoom}%")).size(theme::META).font(Font::MONOSPACE).width(Length::Fixed(44.0)).style(|t| text::Style { color: Some(theme::muted(t)) }),
+            button(text("+").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::PreviewZoom(0.25)),
+            button(text("Fullscreen").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::ToggleFullscreen),
+        ]
+        .spacing(theme::XS)
+        .align_y(iced::Alignment::Center);
 
-        // Transport (centered).
-        let transport = container(
-            row![
-                button(text("−60s").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::Skip(-60.0)),
-                button(text("−5s").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::Skip(-5.0)),
-                button(text("−1s").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::Skip(-1.0)),
-                button(text(if ed.playing { "Pause" } else { "Play" }).size(theme::LABEL).font(theme::FONT_MEDIUM)).style(theme::btn_primary).on_press(Message::TogglePlay),
-                button(text("+1s").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::Skip(1.0)),
-                button(text("+5s").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::Skip(5.0)),
-                button(text("+60s").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::Skip(60.0)),
-            ]
-            .spacing(theme::XS)
-            .align_y(iced::Alignment::Center),
-        )
-        .width(Length::Fill)
-        .center_x(Length::Fill);
+        let transport = container(transport_row(ed)).width(Length::Fill).center_x(Length::Fill);
 
         // Timeline.
         let dur = media.duration_sec.max(0.001);
@@ -260,7 +239,7 @@ impl App {
         };
         export_bar = export_bar.push(export_el);
 
-        let player_zone = column![preview, transport, timeline].spacing(theme::MD);
+        let player_zone = column![preview_tools, preview, transport, timeline].spacing(theme::MD);
 
         scrollable(
             column![player_zone, rule::horizontal(1), options, rule::horizontal(1), export_bar]
@@ -268,6 +247,28 @@ impl App {
                 .padding(theme::LG),
         )
         .into()
+    }
+
+    /// The preview expanded to fill the window, with a transport + exit bar pinned to the bottom.
+    fn fullscreen_view(&self) -> Element<'_, Message> {
+        let Some(ed) = &self.editor else { return empty_state("…") };
+        let Some(media) = &ed.media else { return empty_state("…") };
+        let bar = container(
+            row![
+                container(transport_row(ed)).width(Length::Fill).center_x(Length::Fill),
+                button(text("Exit fullscreen").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::ToggleFullscreen),
+            ]
+            .spacing(theme::SM)
+            .align_y(iced::Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding([theme::SM, theme::LG])
+        .style(theme::top_bar);
+        container(column![preview_pane(ed, media, Length::Fill), bar])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(theme::canvas)
+            .into()
     }
 
     fn crop_section<'a>(&self, ed: &'a Editor, media: &MediaInfo) -> Element<'a, Message> {
@@ -467,6 +468,24 @@ impl App {
             );
         }
 
+        // HDR preview brightness — a gamma lift for HDR clips that tonemap too dark in the preview.
+        let gamma = self.config.hdr_preview_gamma;
+        let hdr_preview = column![
+            row![
+                text("Brightness").size(theme::LABEL).width(Length::Fill),
+                text(format!("gamma {gamma:.2}")).size(theme::SMALL).style(|t| text::Style { color: Some(theme::muted(t)) }),
+            ]
+            .align_y(iced::Alignment::Center),
+            slider(1.0..=3.0, gamma, Message::SetHdrPreviewGamma)
+                .step(0.05)
+                .on_release(Message::ApplyHdrPreviewGamma)
+                .style(theme::slider_style),
+            text("Brightens HDR clips that preview too dark (HDR sources only; preview only — exports are unaffected). 1.0 = off.")
+                .size(theme::SMALL)
+                .style(|t| text::Style { color: Some(theme::muted(t)) }),
+        ]
+        .spacing(theme::XS);
+
         let body = column![
             text("Settings").size(theme::DISPLAY).font(theme::FONT_BOLD),
             section("Watched folders", folders.into()),
@@ -482,6 +501,7 @@ impl App {
                 .into(),
             ),
             section("FFmpeg", column![ffmpeg_row, ffmpeg_status, ffprobe_row, ffprobe_status].spacing(theme::SM).into()),
+            section("HDR preview", hdr_preview.into()),
             section("After export", after.into()),
             section("Editor shortcuts (Premiere Pro defaults)", self.keybinds_section()),
             button(text("Open config file").size(theme::LABEL)).style(theme::btn_ghost).on_press(Message::OpenConfigFile),
@@ -627,6 +647,47 @@ fn meta_line(item: &QueueItem) -> String {
         parts.push(format_bytes(b as f64));
     }
     parts.join(" · ")
+}
+
+/// The −60/−5/−1/Play/+1/+5/+60 transport buttons (shared by the editor and the fullscreen bar).
+fn transport_row(ed: &Editor) -> Element<'static, Message> {
+    row![
+        button(text("−60s").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::Skip(-60.0)),
+        button(text("−5s").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::Skip(-5.0)),
+        button(text("−1s").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::Skip(-1.0)),
+        button(text(if ed.playing { "Pause" } else { "Play" }).size(theme::LABEL).font(theme::FONT_MEDIUM)).style(theme::btn_primary).on_press(Message::TogglePlay),
+        button(text("+1s").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::Skip(1.0)),
+        button(text("+5s").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::Skip(5.0)),
+        button(text("+60s").size(theme::LABEL)).style(theme::btn_secondary).on_press(Message::Skip(60.0)),
+    ]
+    .spacing(theme::XS)
+    .align_y(iced::Alignment::Center)
+    .into()
+}
+
+/// The video preview: the wgpu shader fitted (aspect-preserving) into `height` of available width,
+/// framed in a panel. Double-clicking toggles fullscreen.
+fn preview_pane<'a>(ed: &'a Editor, media: &MediaInfo, height: Length) -> Element<'a, Message> {
+    let vw = media.width.max(1) as f32;
+    let vh = media.height.max(1) as f32;
+    let frame = ed.shared_frame.clone();
+    let has_frame = ed.has_frame;
+    let video = responsive(move |bounds| {
+        if !has_frame {
+            return container(text("Preparing preview…").size(theme::LABEL).style(|t| text::Style { color: Some(theme::muted(t)) }))
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into();
+        }
+        let s = (bounds.width / vw).min(bounds.height / vh);
+        let (w, h) = ((vw * s).max(1.0), (vh * s).max(1.0));
+        container(shader(video::VideoProgram::new(frame.clone())).width(Length::Fixed(w)).height(Length::Fixed(h)))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    });
+    let pane = container(video).width(Length::Fill).height(height).style(theme::panel);
+    mouse_area(pane).on_double_click(Message::ToggleFullscreen).into()
 }
 
 /// A label-over-value stat group for the export bar.

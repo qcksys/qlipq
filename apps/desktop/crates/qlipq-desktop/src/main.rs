@@ -31,8 +31,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iced::widget::{
-    button, center, checkbox, column, container, mouse_area, opaque, pick_list, progress_bar, row,
-    rule, scrollable, shader, slider, stack, text, text_input, tooltip, Space,
+    button, center, checkbox, column, container, mouse_area, opaque, pick_list, progress_bar,
+    responsive, row, rule, scrollable, shader, slider, stack, text, text_input, tooltip, Space,
 };
 use iced::{Element, Font, Length, Size, Subscription, Task, Theme};
 
@@ -230,6 +230,10 @@ struct App {
     delete_confirm: Option<String>,
     new_tag: String,
     export_target: Option<String>,
+    /// The video preview is expanded to fill the window.
+    fullscreen: bool,
+    /// Multiplier on the preview pane height (zoom control).
+    preview_scale: f32,
     theme: Theme,
 }
 
@@ -250,6 +254,8 @@ enum Message {
     FrameExtracted(String, Option<(u32, u32, Vec<u8>, f64)>),
     Seek(f64),
     Skip(f64),
+    ToggleFullscreen,
+    PreviewZoom(f32),
     TimestampEdited(String),
     TimestampSubmit,
     EditorKey(iced::keyboard::Key, iced::keyboard::Modifiers),
@@ -310,6 +316,10 @@ enum Message {
     SetFps(FpsChoice),
     SetRes(ResChoice),
     SetAudioKbps(AudioKbpsChoice),
+    /// HDR preview brightness slider: dragging updates the value live; release re-applies it to the
+    /// preview and persists.
+    SetHdrPreviewGamma(f64),
+    ApplyHdrPreviewGamma,
     SetAfter(AfterChoice),
     MoveFolderChanged(String),
     RenamePrefixChanged(String),
@@ -353,6 +363,8 @@ impl App {
             delete_confirm: None,
             new_tag: String::new(),
             export_target: None,
+            fullscreen: false,
+            preview_scale: 1.0,
             theme: theme::dark(),
         };
 
@@ -377,9 +389,11 @@ impl App {
         if self.editor.is_some() && !modal {
             subs.push(iced::event::listen_with(editor_key_event));
         }
-        // While a modal is open, Escape dismisses it.
+        // Escape dismisses a modal; otherwise it exits fullscreen.
         if modal {
             subs.push(iced::event::listen_with(modal_escape_event));
+        } else if self.fullscreen {
+            subs.push(iced::event::listen_with(fullscreen_escape_event));
         }
         // While playing, add a fast tick at the preview frame rate to pull streamed frames.
         if let Some(player) = self.editor.as_ref().filter(|e| e.playing).and_then(|e| e.player.as_ref()) {
@@ -509,6 +523,8 @@ impl App {
             Message::PlaybackTick => self.on_playback_tick(),
             Message::ShowQueue => self.view = View::Queue,
             Message::ShowSettings => self.view = View::Settings,
+            Message::ToggleFullscreen => self.fullscreen = !self.fullscreen,
+            Message::PreviewZoom(delta) => self.preview_scale = (self.preview_scale + delta).clamp(0.5, 2.5),
             Message::OpenRepo => host::open_external("https://github.com/qcksys/qlipq"),
             Message::OpenFfmpeg => host::open_external("https://ffmpeg.org"),
             Message::RescanAll => {
@@ -941,6 +957,19 @@ impl App {
             Message::SetFps(c) => { self.config.output.fps = c.to_core(); return self.save_config_task(); }
             Message::SetRes(c) => { self.config.output.max_height = c.to_core(); return self.save_config_task(); }
             Message::SetAudioKbps(c) => { self.config.output.audio_bitrate_kbps = c.to_core(); return self.save_config_task(); }
+            Message::SetHdrPreviewGamma(v) => self.config.hdr_preview_gamma = v.clamp(1.0, 3.0),
+            Message::ApplyHdrPreviewGamma => {
+                // Rebuild the scrub graph with the new gamma, persist, and refresh what's on screen
+                // (restart playback if playing, else re-extract the current frame).
+                self.reopen_scrubber();
+                let save = self.save_config_task();
+                let refresh = if self.editor.as_ref().map(|e| e.playing).unwrap_or(false) {
+                    self.play_from_current()
+                } else {
+                    self.request_frame()
+                };
+                return Task::batch([save, refresh]);
+            }
             Message::SetAfter(c) => { self.config.after_export.action = c.to_core(); return self.save_config_task(); }
             Message::MoveFolderChanged(s) => { self.config.after_export.move_folder = s; return self.save_config_task(); }
             Message::RenamePrefixChanged(s) => { self.config.after_export.rename_prefix = s; return self.save_config_task(); }
@@ -1021,6 +1050,23 @@ impl App {
         sync_time_input(ed);
     }
 
+    /// Rebuild the warm scrub decoder for the open clip, picking up the current `hdr_preview_gamma`.
+    /// Used when a preview-affecting setting changes so the next extracted frame reflects it.
+    fn reopen_scrubber(&mut self) {
+        let Some(ed) = self.editor.as_ref() else { return };
+        let Some(media) = ed.media.as_ref() else { return };
+        let (mw, mh, is_hdr, id) = (media.width, media.height, ed.is_hdr, ed.item_id.clone());
+        let path = self.items.iter().find(|i| i.id == id).map(|i| i.path.clone());
+        let ffmpeg = self.config.ffmpeg_path.clone();
+        let gamma = self.config.hdr_preview_gamma;
+        let scrubber = path
+            .and_then(|p| ScrubDecoder::open(&p, &ffmpeg, mw, mh, is_hdr, gamma))
+            .map(|s| Arc::new(Mutex::new(s)));
+        if let Some(ed) = self.editor.as_mut() {
+            ed.scrubber = scrubber;
+        }
+    }
+
     /// Extract a single preview frame at the playhead (scrubbing / paused). Coalesces: if an
     /// extraction is already in flight, just mark the frame dirty and re-request on completion.
     fn request_frame(&mut self) -> Task<Message> {
@@ -1070,7 +1116,8 @@ impl App {
             return Task::none();
         };
         let ffmpeg = self.config.ffmpeg_path.clone();
-        let player = start_player(&path, &ffmpeg, start, mw, mh, mfps, is_hdr, audio_tracks);
+        let gamma = self.config.hdr_preview_gamma;
+        let player = start_player(&path, &ffmpeg, start, mw, mh, mfps, is_hdr, audio_tracks, gamma);
         let started = player.is_some();
         if let Some(ed) = &mut self.editor {
             ed.current_time = start;
@@ -1166,8 +1213,9 @@ impl App {
                 // lives until the next selection drops this Editor.
                 let path = self.items.iter().find(|i| i.id == id).map(|i| i.path.clone());
                 let ffmpeg = self.config.ffmpeg_path.clone();
+                let gamma = self.config.hdr_preview_gamma;
                 ed.scrubber = path
-                    .and_then(|p| ScrubDecoder::open(&p, &ffmpeg, mw, mh, is_hdr))
+                    .and_then(|p| ScrubDecoder::open(&p, &ffmpeg, mw, mh, is_hdr, gamma))
                     .map(|s| Arc::new(Mutex::new(s)));
             }
         }
@@ -1494,24 +1542,31 @@ impl App {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let content: Element<Message> = match self.view {
-            View::Settings => self.settings_view(),
-            View::Queue => row![
-                container(self.queue_sidebar())
-                    .width(Length::Fixed(SIDEBAR_WIDTH))
-                    .height(Length::Fill)
-                    .style(theme::sidebar),
-                rule::vertical(1),
-                container(self.editor_view()).width(Length::Fill).height(Length::Fill),
-            ]
-            .into(),
-        };
+        let fullscreen = self.fullscreen
+            && matches!(self.view, View::Queue)
+            && self.editor.as_ref().map_or(false, |e| e.media.is_some());
 
-        let base: Element<Message> = container(column![self.top_bar(), content])
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(theme::canvas)
-            .into();
+        let base: Element<Message> = if fullscreen {
+            self.fullscreen_view()
+        } else {
+            let content: Element<Message> = match self.view {
+                View::Settings => self.settings_view(),
+                View::Queue => row![
+                    container(self.queue_sidebar())
+                        .width(Length::Fixed(SIDEBAR_WIDTH))
+                        .height(Length::Fill)
+                        .style(theme::sidebar),
+                    rule::vertical(1),
+                    container(self.editor_view()).width(Length::Fill).height(Length::Fill),
+                ]
+                .into(),
+            };
+            container(column![self.top_bar(), content])
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(theme::canvas)
+                .into()
+        };
 
         // A modal layers over the dimmed app rather than replacing it.
         let overlay: Option<Element<Message>> = if let Some(r) = &self.rename {
@@ -1657,6 +1712,16 @@ fn modal_escape_event(event: iced::Event, _status: iced::event::Status, _id: ice
     use iced::keyboard::{key::Named, Event::KeyPressed, Key};
     if let iced::Event::Keyboard(KeyPressed { key: Key::Named(Named::Escape), .. }) = event {
         Some(Message::DismissModal)
+    } else {
+        None
+    }
+}
+
+/// Escape key → exit fullscreen preview. A plain `fn` for `listen_with`.
+fn fullscreen_escape_event(event: iced::Event, _status: iced::event::Status, _id: iced::window::Id) -> Option<Message> {
+    use iced::keyboard::{key::Named, Event::KeyPressed, Key};
+    if let iced::Event::Keyboard(KeyPressed { key: Key::Named(Named::Escape), .. }) = event {
+        Some(Message::ToggleFullscreen)
     } else {
         None
     }

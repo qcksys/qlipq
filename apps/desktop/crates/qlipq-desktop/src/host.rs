@@ -253,18 +253,19 @@ fn detect_hdr(probe_json: &str) -> bool {
 /// HDR is shown with washed-out/clipped colors); for SDR, a plain scale. Both fix the output size so
 /// the raw RGBA byte count is exact. Pass `fps` for the streaming decoder (resamples the rate).
 #[cfg(not(feature = "libav-preview"))]
-fn preview_vf(w: u32, h: u32, is_hdr: bool, fps: Option<f64>) -> String {
+fn preview_vf(w: u32, h: u32, is_hdr: bool, fps: Option<f64>, gamma: f64) -> String {
     let fps_part = fps.map(|f| format!(",fps={f:.5}")).unwrap_or_default();
     if is_hdr {
         // zscale resizes + linearizes from the source's HDR transfer, Hable tonemaps to SDR (clean
-        // highlight rolloff), then back to full-range BT.709; a small `eq` gamma lift restores
-        // midtones (Hable alone reads too dark; Mobius alone too bright). `-pix_fmt rgba` finishes.
+        // highlight rolloff), then back to full-range BT.709; an `eq` gamma lift restores midtones
+        // (Hable alone reads too dark) — the `hdr_preview_gamma` setting. `-pix_fmt rgba` finishes.
         // NOTE: this is an interim fixed-operator approximation. VLC-quality HDR (libplacebo with
         // dynamic peak detection) is too slow to spawn per-frame and will come via the in-process
         // rsmpeg + libplacebo preview path.
+        let g = gamma.clamp(0.1, 10.0);
         format!(
             "zscale=w={w}:h={h}:t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,\
-             tonemap=tonemap=hable:desat=2,zscale=t=bt709:m=bt709:r=pc,eq=gamma=1.3{fps_part}"
+             tonemap=tonemap=hable:desat=2,zscale=t=bt709:m=bt709:r=pc,eq=gamma={g:.3}{fps_part}"
         )
     } else {
         format!("scale={w}:{h}{fps_part}")
@@ -292,10 +293,11 @@ pub fn extract_frame(
     src_w: i64,
     src_h: i64,
     is_hdr: bool,
+    gamma: f64,
 ) -> Result<(u32, u32, Vec<u8>), String> {
     let (w, h) = preview_dims(src_w, src_h);
     let sec_arg = format!("{:.3}", sec.max(0.0));
-    let vf = preview_vf(w, h, is_hdr, None);
+    let vf = preview_vf(w, h, is_hdr, None, gamma);
     let mut output = hidden_command(ffmpeg_path)
         .args([
             "-hide_banner", "-loglevel", "error", "-ss", &sec_arg, "-i", path, "-frames:v", "1",
@@ -322,18 +324,19 @@ pub struct ScrubDecoder {
     src_w: i64,
     src_h: i64,
     is_hdr: bool,
+    gamma: f64,
 }
 
 #[cfg(not(feature = "libav-preview"))]
 impl ScrubDecoder {
-    pub fn open(path: &str, ffmpeg_path: &str, src_w: i64, src_h: i64, is_hdr: bool) -> Option<Self> {
-        Some(Self { path: path.to_string(), ffmpeg: ffmpeg_path.to_string(), src_w, src_h, is_hdr })
+    pub fn open(path: &str, ffmpeg_path: &str, src_w: i64, src_h: i64, is_hdr: bool, gamma: f64) -> Option<Self> {
+        Some(Self { path: path.to_string(), ffmpeg: ffmpeg_path.to_string(), src_w, src_h, is_hdr, gamma })
     }
 
     /// Extract the frame at `sec`. The CLI path can't report the exact decoded PTS, so `realized_sec`
     /// echoes the request.
     pub fn frame_at(&mut self, sec: f64) -> Option<(u32, u32, Vec<u8>, f64)> {
-        extract_frame(&self.path, &self.ffmpeg, sec, self.src_w, self.src_h, self.is_hdr)
+        extract_frame(&self.path, &self.ffmpeg, sec, self.src_w, self.src_h, self.is_hdr, self.gamma)
             .ok()
             .map(|(w, h, rgba)| (w, h, rgba, sec))
     }
@@ -419,11 +422,12 @@ pub fn start_player(
     src_fps: f64,
     is_hdr: bool,
     _audio_tracks: Vec<(i64, f64)>,
+    gamma: f64,
 ) -> Option<Player> {
     let (w, h) = preview_dims(src_w, src_h);
     let fps = if src_fps.is_finite() && src_fps > 0.0 { src_fps.min(30.0) } else { 30.0 };
     let start = format!("{:.3}", start_sec.max(0.0));
-    let vf = preview_vf(w, h, is_hdr, Some(fps));
+    let vf = preview_vf(w, h, is_hdr, Some(fps), gamma);
 
     let mut child = hidden_command(ffmpeg_path)
         .args([

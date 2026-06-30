@@ -179,6 +179,11 @@ pub struct AppConfig {
     pub naming_template: String,
     pub ffmpeg_path: String,
     pub ffprobe_path: String,
+    /// HDR→SDR **preview** brightness, as an `eq` gamma applied after the tonemap (higher = brighter;
+    /// `1.0` = off). Compensates for HDR (esp. Windows desktop) captures that preview too dark.
+    /// Preview only — exports are unaffected; SDR clips ignore it.
+    #[schemars(range(min = 0.1, max = 10.0))]
+    pub hdr_preview_gamma: f64,
     pub after_export: AfterExportSettings,
     pub output: OutputSettings,
     pub keybinds: Keybinds,
@@ -193,6 +198,7 @@ impl Default for AppConfig {
             naming_template: "{date}_{source}_{name}".into(),
             ffmpeg_path: "ffmpeg".into(),
             ffprobe_path: "ffprobe".into(),
+            hdr_preview_gamma: 1.8,
             after_export: AfterExportSettings::default(),
             output: OutputSettings::default(),
             keybinds: Keybinds::default(),

@@ -85,6 +85,9 @@ struct Shared {
     /// Set when the video decoder reaches EOF (or dies); playback ends once the queue drains.
     ended: AtomicBool,
     clock: Clock,
+    /// HDR→SDR preview brightness (`eq` gamma applied after the tonemap); read when (re)building the
+    /// per-segment filter graph. Set once at `start_player`.
+    gamma: f64,
 }
 
 enum Command {
@@ -191,6 +194,7 @@ pub fn start_player(
     src_fps: f64,
     is_hdr: bool,
     audio_tracks: Vec<(i64, f64)>,
+    gamma: f64,
 ) -> Option<Player> {
     let cpath = CString::new(path).ok()?;
     let input = AVFormatContextInput::open(&cpath).ok()?;
@@ -209,6 +213,7 @@ pub fn start_player(
     let shared = Arc::new(Shared {
         video: Mutex::new(VecDeque::new()),
         ended: AtomicBool::new(false),
+        gamma,
         clock: Clock {
             use_audio: AtomicBool::new(has_audio),
             base: Mutex::new(start_sec),
@@ -272,6 +277,8 @@ pub struct ScrubDecoder {
     sar: ffi::AVRational,
     dims: (u32, u32),
     is_hdr: bool,
+    /// HDR→SDR preview brightness (`eq` gamma); baked into the warm graph on first `frame_at`.
+    gamma: f64,
     /// Warm filter graph, built lazily on the first `frame_at` and reused for every scrub.
     graph: Option<AVFilterGraph>,
     /// Monotonic PTS handed to buffersrc so reused-graph pushes never look like backward time.
@@ -282,7 +289,7 @@ impl ScrubDecoder {
     /// Open the file and build the video decoder once (the filter graph is built lazily on first use).
     /// The `_ffmpeg_path` is unused (decoding is in-process); the signature matches
     /// `host::ScrubDecoder::open` so the editor is feature-agnostic. `None` if the file/decoder can't open.
-    pub fn open(path: &str, _ffmpeg_path: &str, src_w: i64, src_h: i64, is_hdr: bool) -> Option<Self> {
+    pub fn open(path: &str, _ffmpeg_path: &str, src_w: i64, src_h: i64, is_hdr: bool, gamma: f64) -> Option<Self> {
         let cpath = CString::new(path).ok()?;
         let input = AVFormatContextInput::open(&cpath).ok()?;
         let vid_idx = input.find_best_stream(ffi::AVMEDIA_TYPE_VIDEO).ok()?.map(|(i, _)| i)?;
@@ -295,6 +302,7 @@ impl ScrubDecoder {
             sar,
             dims: placebo_dims(src_w, src_h),
             is_hdr,
+            gamma,
             graph: None,
             mono_pts: 0,
         })
@@ -320,7 +328,7 @@ impl ScrubDecoder {
         // Build the warm graph once (its libplacebo/Vulkan init is the one-time cost).
         if self.graph.is_none() {
             let graph = AVFilterGraph::new();
-            build_video_filter(&graph, &self.vdec, self.tb_v, self.sar, w, h, self.is_hdr).ok()?;
+            build_video_filter(&graph, &self.vdec, self.tb_v, self.sar, w, h, self.is_hdr, self.gamma).ok()?;
             self.graph = Some(graph);
         }
 
@@ -476,7 +484,7 @@ fn video_segment(
     vdec.flush_buffers();
 
     let graph = AVFilterGraph::new();
-    let (mut src, mut sink) = match build_video_filter(&graph, vdec, tb_v, sar, w, h, is_hdr) {
+    let (mut src, mut sink) = match build_video_filter(&graph, vdec, tb_v, sar, w, h, is_hdr, shared.gamma) {
         Ok(pair) => pair,
         Err(_) => return SegEnd::Eof,
     };
@@ -971,6 +979,7 @@ fn build_video_filter<'g>(
     w: u32,
     h: u32,
     is_hdr: bool,
+    gamma: f64,
 ) -> Result<(AVFilterContextMut<'g>, AVFilterContextMut<'g>), String> {
     // Carry the decoded color matrix + range into the buffer source. Without them the source is
     // created as colorspace/range "unknown", so the first HDR frame (bt2020nc / tv) trips
@@ -999,14 +1008,15 @@ fn build_video_filter<'g>(
     let inputs = AVFilterInOut::new(c"out", &mut sink, 0);
     let descr = if is_hdr {
         // HDR→BT.709 SDR tonemap (full-range RGB out for the GPU upload), then an `eq=gamma` midtone
-        // lift. Windows HDR *desktop* capture pins SDR-content white at the Windows "SDR content
-        // brightness" level (often well above the 203-nit reference) inside the PQ container, so
-        // libplacebo maps that down to its 203-nit SDR target and the UI reads ~half brightness. The
-        // ffmpeg libplacebo wrapper exposes no source/target-peak knob, so we compensate with gamma
-        // (>1 brightens, preserves true black — same lever as the CLI path's `eq=gamma=1.3`). Tune
-        // `gamma` to taste here (1.4 gentler … 2.0 stronger).
+        // lift (the `hdr_preview_gamma` setting). Windows HDR *desktop* capture pins SDR-content white
+        // at the Windows "SDR content brightness" level (often well above the 203-nit reference)
+        // inside the PQ container, so libplacebo maps that down to its 203-nit SDR target and the UI
+        // reads ~half brightness. The ffmpeg libplacebo wrapper exposes no source/target-peak knob, so
+        // we compensate with gamma (>1 brightens, preserves true black). 1.0 = off (filter skipped).
+        let g = gamma.clamp(0.1, 10.0);
+        let lift = if (g - 1.0).abs() > 1e-3 { format!(",eq=gamma={g:.3}") } else { String::new() };
         CString::new(format!(
-            "libplacebo=w={w}:h={h}:tonemapping=auto:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=pc,eq=gamma=1.8,format=rgba"
+            "libplacebo=w={w}:h={h}:tonemapping=auto:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=pc{lift},format=rgba"
         ))
     } else {
         CString::new(format!("scale={w}:{h}:flags=bilinear,format=rgba"))

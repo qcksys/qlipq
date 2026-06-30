@@ -39,6 +39,6 @@ The editor shows an estimated file size for the current clip, and you can overri
 5. Toggle **audio tracks** and set their levels (your selection carries to the next clip). On **export**, the enabled tracks are **mixed together into one track** at the levels you set.
 6. Click **Export clip**. If a file with the same name already exists you can **overwrite** it or **append a timestamp** to keep both, and the **After export** setting decides what happens to the original (keep, delete, move, rename, or prompt). Use **Show file** to reveal the exported clip.
 
-> The built-in player (powered by VLC) plays MKV and HEVC directly, so previews need no conversion. Exports always use the original file.
+> **Preview vs. export.** The preview decodes frames in-process and tonemaps HDR sources to SDR for display — it's a visual guide, and **exports always use the original file, untouched**. If an HDR clip (especially a Windows HDR _desktop_ recording) previews too dark, **Settings → HDR preview → Brightness** lifts it with an adjustable gamma (higher = brighter; `1.0` = off). It affects the preview only and applies to HDR sources only.
 
 **Next:** [set up the OBS replay buffer](/guide/obs-replay-buffer).
