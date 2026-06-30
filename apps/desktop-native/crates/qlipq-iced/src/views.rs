@@ -67,27 +67,32 @@ impl App {
 
     fn queue_card(&self, item: &QueueItem) -> Element<'_, Message> {
         let selected = self.selected_id.as_deref() == Some(&item.id);
-        let title = format!("{}{}", if selected { "▶ " } else { "" }, item.file_name);
+        let status = item.status;
         let open = button(
-            column![text(title).size(14), text(meta_line(item)).size(11), text(status_label(item.status)).size(11)]
-                .spacing(2),
+            column![
+                text(item.file_name.clone()).size(14),
+                text(meta_line(item)).size(11).style(|t| text::Style { color: Some(theme::muted(t)) }),
+                text(status_label(status)).size(11).style(move |t| text::Style { color: Some(theme::status_color(t, status)) }),
+            ]
+            .spacing(2),
         )
         .width(Length::Fill)
+        .style(button::text)
         .on_press(Message::SelectItem(item.id.clone()));
 
         let mut tags_row = row![].spacing(4);
         for t in item.tags.clone().unwrap_or_default() {
-            tags_row = tags_row.push(text(format!("#{t}")).size(11));
+            tags_row = tags_row.push(text(format!("#{t}")).size(11).style(|t| text::Style { color: Some(theme::muted(t)) }));
         }
 
         let actions = row![
-            button(text("Rename").size(12)).on_press(Message::RenameOpen(item.id.clone())),
-            button(text(if item_dismissed(item) { "Restore" } else { "Dismiss" }).size(12)).on_press(Message::Dismiss(item.id.clone())),
-            button(text("Delete").size(12)).on_press(Message::RequestDelete(item.id.clone())),
+            button(text("Rename").size(12)).style(button::secondary).on_press(Message::RenameOpen(item.id.clone())),
+            button(text(if item_dismissed(item) { "Restore" } else { "Dismiss" }).size(12)).style(button::secondary).on_press(Message::Dismiss(item.id.clone())),
+            button(text("Delete").size(12)).style(button::danger).on_press(Message::RequestDelete(item.id.clone())),
         ]
         .spacing(8);
 
-        container(column![open, tags_row, actions].spacing(4)).padding(8).into()
+        container(column![open, tags_row, actions].spacing(4)).padding(8).style(theme::queue_card(selected)).into()
     }
 
     fn editor_view(&self) -> Element<'_, Message> {
@@ -128,13 +133,13 @@ impl App {
 
         // Transport.
         let transport = row![
-            button("−60s").on_press(Message::Skip(-60.0)),
-            button("−5s").on_press(Message::Skip(-5.0)),
-            button("−1s").on_press(Message::Skip(-1.0)),
-            button(if ed.playing { "Pause" } else { "Play" }).on_press(Message::TogglePlay),
-            button("+1s").on_press(Message::Skip(1.0)),
-            button("+5s").on_press(Message::Skip(5.0)),
-            button("+60s").on_press(Message::Skip(60.0)),
+            button("−60s").style(button::secondary).on_press(Message::Skip(-60.0)),
+            button("−5s").style(button::secondary).on_press(Message::Skip(-5.0)),
+            button("−1s").style(button::secondary).on_press(Message::Skip(-1.0)),
+            button(if ed.playing { "Pause" } else { "Play" }).style(button::primary).on_press(Message::TogglePlay),
+            button("+1s").style(button::secondary).on_press(Message::Skip(1.0)),
+            button("+5s").style(button::secondary).on_press(Message::Skip(5.0)),
+            button("+60s").style(button::secondary).on_press(Message::Skip(60.0)),
         ]
         .spacing(4);
 
@@ -199,7 +204,8 @@ impl App {
             format!("Exporting {}%", (ed.progress_display * 100.0) as i32)
         } else {
             "Export clip".to_string()
-        }));
+        }))
+        .style(button::primary);
         export_bar = export_bar.push(if can_export { export_btn.on_press(Message::Export) } else { export_btn });
 
         scrollable(
@@ -229,7 +235,7 @@ impl App {
                 .spacing(8),
             );
         }
-        container(col).padding(12).into()
+        container(col).padding(12).style(theme::card).into()
     }
 
     fn audio_section<'a>(&self, ed: &'a Editor) -> Element<'a, Message> {
@@ -256,7 +262,7 @@ impl App {
                 .spacing(4),
             );
         }
-        container(col).padding(12).into()
+        container(col).padding(12).style(theme::card).into()
     }
 
     fn override_section(&self, item: &QueueItem) -> Element<'_, Message> {
@@ -281,7 +287,7 @@ impl App {
             }
             col = col.push(fields);
         }
-        container(col).padding(12).into()
+        container(col).padding(12).style(theme::card).into()
     }
 
     fn editor_tags(&self, item: &QueueItem) -> Element<'_, Message> {
@@ -289,11 +295,11 @@ impl App {
         for t in item.tags.clone().unwrap_or_default() {
             let tag = t.clone();
             tags_row = tags_row.push(
-                row![text(t).size(12), button(text("✕").size(11)).on_press(Message::RemoveTag(tag))].spacing(2),
+                row![text(t).size(12), button(text("✕").size(11)).style(button::secondary).on_press(Message::RemoveTag(tag))].spacing(2),
             );
         }
         let input = text_input("Add tag…", &self.new_tag).on_input(Message::NewTagChanged).on_submit(Message::AddTag).width(Length::Fixed(160.0));
-        container(column![text("Tags"), row![tags_row, input].spacing(8)].spacing(8)).padding(12).into()
+        container(column![text("Tags"), row![tags_row, input].spacing(8)].spacing(8)).padding(12).style(theme::card).into()
     }
 
     fn settings_view(&self) -> Element<'_, Message> {
@@ -435,8 +441,8 @@ impl App {
             text(format!("{name} will be permanently deleted. This can't be undone.")),
             row![
                 Space::new().width(Length::Fill),
-                button("Cancel").on_press(Message::DeleteCancel),
-                button("Delete").on_press(Message::DeleteConfirm),
+                button("Cancel").style(button::secondary).on_press(Message::DeleteCancel),
+                button("Delete").style(button::danger).on_press(Message::DeleteConfirm),
             ]
             .spacing(8),
         ]
@@ -463,10 +469,10 @@ impl App {
             text("Export complete").size(18),
             text("What should happen to the original recording?"),
             row![
-                button("Keep").on_press(Message::AfterChoice(AfterExportAction::Nothing)),
-                button("Rename").on_press(Message::AfterChoice(AfterExportAction::Rename)),
-                button("Move…").on_press(Message::AfterChoice(AfterExportAction::Move)),
-                button("Delete").on_press(Message::AfterChoice(AfterExportAction::Delete)),
+                button("Keep").style(button::secondary).on_press(Message::AfterChoice(AfterExportAction::Nothing)),
+                button("Rename").style(button::secondary).on_press(Message::AfterChoice(AfterExportAction::Rename)),
+                button("Move…").style(button::secondary).on_press(Message::AfterChoice(AfterExportAction::Move)),
+                button("Delete").style(button::danger).on_press(Message::AfterChoice(AfterExportAction::Delete)),
             ]
             .spacing(8),
         ]
@@ -524,11 +530,11 @@ fn test_text(status: &Option<(bool, String)>) -> Element<'_, Message> {
 }
 
 fn section<'a>(title: &'a str, content: Element<'a, Message>) -> Element<'a, Message> {
-    container(column![text(title).size(15), content].spacing(8)).padding(12).into()
+    container(column![text(title).size(15), content].spacing(8)).padding(12).style(theme::card).into()
 }
 
 fn modal(content: iced::widget::Column<'_, Message>) -> Element<'_, Message> {
-    container(container(content).padding(20).max_width(520))
+    container(container(content).padding(20).max_width(520).style(theme::card))
         .center_x(Length::Fill)
         .center_y(Length::Fill)
         .padding(40)

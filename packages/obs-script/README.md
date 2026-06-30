@@ -73,7 +73,7 @@ Requires OBS 28+ (uses `obs_frontend_get_last_*` and the Game Capture
 | Write game name into file metadata   | off               | Embeds a `game=` tag via ffmpeg (stream copy). See below.    |
 | ffmpeg path (for metadata)           | `ffmpeg`          | Full path if ffmpeg isn't on `PATH`. Only used when tagging. |
 | Organize replay-buffer saves         | on                |                                                              |
-| Replay subfolder name                | `replay`          |                                                              |
+| Replay subfolder name                | _(none)_          | Empty = replays go straight in the game folder.              |
 | Organize screenshots                 | on                |                                                              |
 | Screenshot subfolder name            | `screenshot`      |                                                              |
 

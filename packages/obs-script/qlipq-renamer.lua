@@ -30,7 +30,7 @@ local state = {
   write_metadata = false, -- embed the game name as file metadata (via ffmpeg)
   ffmpeg_path = "ffmpeg", -- used only when write_metadata is on
   organize_replays = true,
-  replay_folder = "replay",
+  replay_folder = "", -- "" = replays go straight in the game folder (no subfolder)
   organize_screenshots = true,
   screenshot_folder = "screenshot",
   current_raw = nil, -- raw (unsanitized) title of the detected app, or nil
@@ -168,9 +168,11 @@ local function name_of(path) return path:match("[^/\\]+$") end
 
 local function build_dest_dir(base_dir, game, kind)
   local parts = { base_dir, game }
-  if kind == "replay" then
+  -- An empty subfolder name means "no subfolder" — skip it so we don't leave a
+  -- stray path separator.
+  if kind == "replay" and state.replay_folder ~= "" then
     parts[#parts + 1] = state.replay_folder
-  elseif kind == "screenshot" then
+  elseif kind == "screenshot" and state.screenshot_folder ~= "" then
     parts[#parts + 1] = state.screenshot_folder
   end
   if state.organization_mode == "date" then
@@ -419,7 +421,7 @@ function script_defaults(settings)
   obs.obs_data_set_default_bool(settings, "write_metadata", false)
   obs.obs_data_set_default_string(settings, "ffmpeg_path", "ffmpeg")
   obs.obs_data_set_default_bool(settings, "organize_replays", true)
-  obs.obs_data_set_default_string(settings, "replay_folder", "replay")
+  obs.obs_data_set_default_string(settings, "replay_folder", "")
   obs.obs_data_set_default_bool(settings, "organize_screenshots", true)
   obs.obs_data_set_default_string(settings, "screenshot_folder", "screenshot")
 end

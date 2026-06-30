@@ -28,8 +28,8 @@ The script reads the game from your scene's **Game Capture** (or **Window Captur
 | Prefix filenames with the game title | Off             | Names files `Game - <original>` so the game also travels in the filename. |
 | Write game name into file metadata   | Off             | Embeds a `game=` tag with ffmpeg (stream copy). See below.                |
 | ffmpeg path (for metadata)           | `ffmpeg`        | Full path if ffmpeg isn't on `PATH`. Only used when the tag option is on. |
-| Organize replay-buffer saves         | On              | Saved replays go under a `replay` subfolder; turn off to leave them put.  |
-| Replay subfolder name                | `replay`        | Name of that subfolder.                                                   |
+| Organize replay-buffer saves         | On              | Organize saved replays too; turn off to leave them where OBS put them.    |
+| Replay subfolder name                | _(none)_        | Empty (default) = replays go straight in the game folder.                 |
 | Organize screenshots                 | On              | Screenshots go under a `screenshot` subfolder.                            |
 | Screenshot subfolder name            | `screenshot`    | Name of that subfolder.                                                   |
 
@@ -57,8 +57,7 @@ With the script running, each file lands under the game that was hooked when it 
 D:\Clips\
 ├─ Apex Legends\
 │  ├─ 2026-06-30 21-14-02.mkv
-│  └─ replay\
-│     └─ Replay 2026-06-30 22-03-11.mkv
+│  └─ Replay 2026-06-30 22-03-11.mkv
 ├─ Counter Strike 2\
 │  └─ 2026-06-30 21-55-40.mkv
 └─ Any Recording\

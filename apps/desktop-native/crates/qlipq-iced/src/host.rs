@@ -243,11 +243,12 @@ fn detect_hdr(probe_json: &str) -> bool {
 fn preview_vf(w: u32, h: u32, is_hdr: bool, fps: Option<f64>) -> String {
     let fps_part = fps.map(|f| format!(",fps={f:.5}")).unwrap_or_default();
     if is_hdr {
-        // zscale resizes + linearizes from the source's HDR transfer, Hable tonemaps to SDR, then
-        // back to BT.709 limited-range; `-pix_fmt rgba` does the final 8-bit conversion.
+        // zscale resizes + linearizes from the source's HDR transfer, then Mobius tonemaps to SDR
+        // and converts back to full-range BT.709; `-pix_fmt rgba` does the final 8-bit conversion.
+        // Mobius (vs Hable) keeps midtones up — Hable crushed shadows and looked too dark.
         format!(
             "zscale=w={w}:h={h}:t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,\
-             tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv{fps_part}"
+             tonemap=tonemap=mobius,zscale=t=bt709:m=bt709:r=pc{fps_part}"
         )
     } else {
         format!("scale={w}:{h}{fps_part}")

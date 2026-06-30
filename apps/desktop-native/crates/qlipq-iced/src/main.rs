@@ -9,6 +9,7 @@
 
 mod host;
 mod iso;
+mod theme;
 mod video;
 
 use std::collections::HashSet;
@@ -181,6 +182,7 @@ struct App {
     delete_confirm: Option<String>,
     new_tag: String,
     export_target: Option<String>,
+    theme: Theme,
 }
 
 #[derive(Debug, Clone)]
@@ -295,6 +297,7 @@ impl App {
             delete_confirm: None,
             new_tag: String::new(),
             export_target: None,
+            theme: theme::dark(),
         };
 
         let folders = app.config.watched_folders.clone();
@@ -320,7 +323,7 @@ impl App {
     }
 
     fn theme(&self) -> Theme {
-        Theme::Dark
+        self.theme.clone()
     }
 
     fn save_config_task(&self) -> Task<Message> {

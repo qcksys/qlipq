@@ -7,10 +7,6 @@ on:
   pull_request:
     paths: ["apps/desktop-native/**", ".github/workflows/iced-desktop.yml"]
 
-concurrency:
-  group: iced-${{ github.ref }}-${{ matrix.os }}
-  cancel-in-progress: true
-
 jobs:
   build-test:
     strategy:
@@ -18,6 +14,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    concurrency:
+      group: iced-${{ github.ref }}-${{ matrix.os }}
+      cancel-in-progress: true
     defaults:
       run:
         working-directory: apps/desktop-native
