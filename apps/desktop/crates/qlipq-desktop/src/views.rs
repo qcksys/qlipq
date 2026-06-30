@@ -204,6 +204,7 @@ impl App {
         }
         if ed.exporting {
             export_bar = export_bar.push(container(progress_bar(0.0..=1.0, ed.progress_display)).width(Length::Fixed(160.0)));
+            export_bar = export_bar.push(button(text("Cancel").size(13)).style(button::danger).on_press(Message::CancelExport));
         }
         export_bar = export_bar.push(Space::new().width(Length::Fill));
         if item.export_path.is_some() && !ed.exporting {

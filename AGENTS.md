@@ -67,19 +67,28 @@ flow in `qlipq-desktop`:
 3. ffmpeg's `-progress` output is parsed with `parse_progress` into a `0..1`
    fraction read by the UI. ffprobe works the same way (raw JSON → `parse_ffprobe`).
 
-**Two preview backends, selected by a Cargo feature** — export is unaffected by
-either; preview accuracy is advisory, export accuracy comes from the parity-tested
-`-ss`/`-t` args.
+This CLI path is what **CI and the release ship** (built with `--no-default-features`). The **`libav-preview` build exports in-process**
+instead ([export.rs](apps/desktop/crates/qlipq-desktop/src/export.rs), `run_export`): it
+decodes → applies the edit → hardware-encodes (the `qlipq-ffmpeg::hw::plan_hw_video` rate-control
+model) → muxes, with no CLI ffmpeg. It dispatches to `export_transcode` (re-encode: crop/scale/fps
+or non-Original quality) or `export_remux` (lossless stream-copy of the video when nothing forces a
+re-encode; audio still mixes). `App::run_export_to` picks the path via a cfg'd `spawn_export`; there
+is no CLI fallback in the libav build.
 
-- **Default (CLI, dependency-light):** a warm ffmpeg process streams raw RGBA
+**Two preview backends, selected by a Cargo feature** — the **CLI** preview is advisory (export
+accuracy comes from the parity-tested `-ss`/`-t` args); the **libav-preview** build shares its
+decode/edit stack with the in-process export above.
+
+- **CLI (`--no-default-features`, dependency-light):** a warm ffmpeg process streams raw RGBA
   frames into a persistent `wgpu` texture (custom GPU shader widget,
   [video.rs](apps/desktop/crates/qlipq-desktop/src/video.rs)); HDR is CPU-tonemapped
   via a zscale chain. No audio. Builds with no native libav dependency (this is
-  what CI builds).
-- **`--features libav-preview` (in-process):** decodes with **rsmpeg** (libav) →
+  what CI/release builds).
+- **`libav-preview` (in-process, the default local build):** decodes with **rsmpeg** (libav) →
   **libplacebo** HDR→SDR tonemap → **cpal** audio (audio is the A/V master clock),
   in [libav.rs](apps/desktop/crates/qlipq-desktop/src/libav.rs). Needs a shared FFmpeg
-  8.x dev build wired via the (gitignored) `.cargo/config.toml`; off by default.
+  8.x dev build wired via the (gitignored) `.cargo/config.toml`; on by default, opt out
+  with `--no-default-features`.
   Preview audio is a **monitor mixdown** of the enabled tracks: `audio_loop` decodes every
   enabled track, applies per-track gain, and sums them into one cpal output (manual sum on the
   audio thread — `mix_and_push`, never blocking the cpal callback / master clock). It will not
@@ -93,13 +102,16 @@ stream-copy at unity). Mixing forces an audio re-encode. This `amix` lives **onl
 
 **Config lives in the `qlipq-core` crate.** `AppConfig`
 ([config.rs](apps/desktop/crates/qlipq-core/src/config.rs),
-`#[serde(rename_all = "camelCase")]`) with lenient load/save in
-[config_json.rs](apps/desktop/crates/qlipq-core/src/config_json.rs). The app
-persists `config.json` + per-clip `edits.json` (camelCase, with a `$schema` ref)
-under **`~/.com.qcksys.qlipq/`** (`host::data_dir`). When you add/rename a config
-field, update **both** the Rust struct **and** the website schema generator (below).
-`qlipq-core` also owns the domain model (QueueItem, EditSpec, MediaInfo), config
-defaults, OBS filename parsing, and rename templating; `qlipq-ffmpeg` depends on it.
+`#[serde(rename_all = "camelCase", default)]`) with load/save in
+[config_json.rs](apps/desktop/crates/qlipq-core/src/config_json.rs). Loading is plain
+serde (`parse` = `from_str(...).unwrap_or_default()`): missing fields and the extra
+`$schema` key keep defaults via `#[serde(default)]`; an invalid value reverts the whole
+document to defaults (no per-field repair). The app persists `config.json` + per-clip
+`edits.json` (camelCase, with a `$schema` ref) under **`~/.com.qcksys.qlipq/`**
+(`host::data_dir`). **Adding a config field is just the Rust struct** — the schema and
+parser derive from it (see Config schema below); no manual sync. `qlipq-core` also owns
+the domain model (QueueItem, EditSpec, MediaInfo), config defaults, OBS filename parsing,
+and rename templating; `qlipq-ffmpeg` depends on it.
 
 **No OBS plugin (by design).** OBS already writes a timestamp (+ optional
 scene/game prefix) into filenames; `parse_obs_filename`
@@ -124,13 +136,16 @@ Content Layer API: the `glob()` loader in
 `Base.astro`. Edit the `.md` files, not hand-written HTML. A change that alters
 functionality without updating the relevant guide markdown is incomplete.
 
-**Config schema.** The app owns its config schema. `config_json::config_schema()`
-([config_json.rs](apps/desktop/crates/qlipq-core/src/config_json.rs)) builds the JSON
-Schema for `AppConfig`, and the app writes it to `~/.com.qcksys.qlipq/config.schema.json`
-on startup (`host::write_config_schema`). `config.json`'s `$schema` is a **relative**
-ref (`./config.schema.json`), so editors validate against that local copy with no network.
-When you add/rename a config field, update `config_schema()` alongside the Rust struct.
-(There is no longer a website `/schema` route.)
+**Config schema is derived from the type (`schemars`).** `config_json::config_schema()`
+([config_json.rs](apps/desktop/crates/qlipq-core/src/config_json.rs)) is just
+`schema_for!(AppConfig)` — the JSON Schema (draft 2020-12) is generated from the
+`#[derive(schemars::JsonSchema)]` on the config types, so it **stays in sync automatically**;
+the app writes it to `~/.com.qcksys.qlipq/config.schema.json` on startup
+(`host::write_config_schema`). `config.json`'s `$schema` is a **relative** ref
+(`./config.schema.json`), so editors validate against that local copy with no network.
+**Adding a field needs nothing extra** beyond the struct; add `#[schemars(range(min,max))]`
+for numeric bounds and a `///` doc comment for the field's description. (There is no
+hand-written schema and no website `/schema` route.)
 
 ## Commands
 
@@ -149,10 +164,10 @@ Desktop app (`qlipq-desktop`) — needs a Rust toolchain; `ffmpeg`/`ffprobe` on 
 (or set in Settings → FFmpeg). Run from `apps/desktop/`:
 
 ```bash
-cargo test                                            # all crate tests
-cargo run -p qlipq-desktop                            # launch the app (default CLI preview)
-cargo run -p qlipq-desktop --features libav-preview   # in-process libav/cpal preview
-cargo build --release                                 # produce the `qlipq` binary
+cargo test                                             # all crate tests
+cargo run -p qlipq-desktop                             # launch the app (in-process libav/cpal preview — the default)
+cargo run -p qlipq-desktop --no-default-features        # CLI ffmpeg preview (dependency-light; what CI/release build)
+cargo build --release --no-default-features             # produce the shippable `qlipq` binary
 ```
 
 Website deploy:
@@ -179,7 +194,7 @@ pnpm -C apps/website deploy:prod   # build + wrangler deploy --env production
 - **`libav-preview` wiring is machine-specific and gitignored.** It links a shared
   FFmpeg 8.x dev build via `apps/desktop/.cargo/config.toml` (`FFMPEG_*` env vars +
   the vendored `apps/desktop/vendor/rusty_ffmpeg_*_binding.rs`, which skips bindgen
-  so no libclang/MSVC headers are needed). The default build doesn't need any of it.
+  so no libclang/MSVC headers are needed). The CLI build (`--no-default-features`) doesn't need any of it.
 - **On Windows PowerShell the `pnpm` shim is flaky** for `exec`/`view`/`run`; run
   raw `pnpm` subcommands via the Bash tool. `vp` itself is fine in PowerShell.
 - **CI** (`.github/workflows/`): `ci.yml` (website — `vp check` + build),

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// How output video quality/bitrate is controlled. `Vbr` = CRF capped by a max bitrate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum QualityMode {
     Preset,
@@ -11,7 +11,7 @@ pub enum QualityMode {
 }
 
 /// Named quality presets; `Original` stream-copies when possible.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum QualityPreset {
     Original,
@@ -20,14 +20,14 @@ pub enum QualityPreset {
     Small,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum VideoCodecChoice {
     Libx264,
     Libx265,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ContainerFormat {
     Mp4,
@@ -35,7 +35,7 @@ pub enum ContainerFormat {
 }
 
 /// What to do with the source recording after a successful export.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AfterExportAction {
     Nothing,
@@ -66,22 +66,27 @@ impl ContainerFormat {
 }
 
 /// Default encoding settings applied to every export.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
 pub struct OutputSettings {
     pub quality_mode: QualityMode,
     pub quality_preset: QualityPreset,
     /// Constant Rate Factor (0–51, lower = better); used when `quality_mode` is `Crf`.
+    #[schemars(range(min = 0, max = 51))]
     pub crf: i64,
     /// Target video bitrate in kbps; used when `quality_mode` is `Bitrate`.
+    #[schemars(range(min = 0))]
     pub video_bitrate_kbps: i64,
     pub encoder_preset: String,
     pub video_codec: VideoCodecChoice,
     pub container: ContainerFormat,
     /// Target frame rate; 0 keeps the source rate. Never up-rates.
+    #[schemars(range(min = 0))]
     pub fps: i64,
     /// Downscale so height ≤ this many pixels; 0 keeps the source size. Never up-scales.
+    #[schemars(range(min = 0))]
     pub max_height: i64,
+    #[schemars(range(min = 0))]
     pub audio_bitrate_kbps: i64,
 }
 
@@ -102,8 +107,8 @@ impl Default for OutputSettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
 pub struct AfterExportSettings {
     pub action: AfterExportAction,
     /// Destination folder for the `Move` action.
@@ -127,8 +132,8 @@ impl Default for AfterExportSettings {
 /// Editor keyboard shortcuts. Each value is a key combo string like `"Space"`, `"I"`, `"Shift+Left"`,
 /// or `"Ctrl+M"` (modifiers `Ctrl`/`Shift`/`Alt`/`Cmd` joined with `+`, then the key). Defaults align
 /// to Adobe Premiere Pro where it has an equivalent. Editable in Settings and in `config.json`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Keybinds {
     pub play_pause: String,
     pub set_in: String,
@@ -162,9 +167,10 @@ impl Default for Keybinds {
 /// Container extensions qlipq treats as editable video by default.
 pub const DEFAULT_VIDEO_EXTENSIONS: [&str; 6] = ["mp4", "mkv", "mov", "flv", "webm", "ts"];
 
-/// Persisted application configuration.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// Schema for qlipq's config.json.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+#[schemars(title = "qlipq configuration")]
 pub struct AppConfig {
     pub watched_folders: Vec<String>,
     pub output_folder: String,
@@ -175,7 +181,6 @@ pub struct AppConfig {
     pub ffprobe_path: String,
     pub after_export: AfterExportSettings,
     pub output: OutputSettings,
-    #[serde(default)]
     pub keybinds: Keybinds,
 }
 

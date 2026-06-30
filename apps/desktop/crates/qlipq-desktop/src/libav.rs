@@ -963,9 +963,17 @@ fn build_video_filter<'g>(
     h: u32,
     is_hdr: bool,
 ) -> Result<(AVFilterContextMut<'g>, AVFilterContextMut<'g>), String> {
+    // Carry the decoded color matrix + range into the buffer source. Without them the source is
+    // created as colorspace/range "unknown", so the first HDR frame (bt2020nc / tv) trips
+    // "Changing video frame properties on the fly is not supported by all filters" — which stalls
+    // libplacebo's continuous output (playback freezes after one frame) and feeds it the wrong
+    // input colorimetry (a limited-range source read as unknown comes out dull/dark). color_primaries
+    // and color_trc ride along on each frame, so the buffer only needs colorspace + range.
+    let (colorspace, color_range) =
+        unsafe { ((*vdec.as_ptr()).colorspace as i32, (*vdec.as_ptr()).color_range as i32) };
     let args = CString::new(format!(
-        "video_size={}x{}:pix_fmt={}:time_base={}/{}:pixel_aspect={}/{}",
-        vdec.width, vdec.height, vdec.pix_fmt as i32, tb_v.num, tb_v.den, sar.num, sar.den
+        "video_size={}x{}:pix_fmt={}:time_base={}/{}:pixel_aspect={}/{}:colorspace={}:range={}",
+        vdec.width, vdec.height, vdec.pix_fmt as i32, tb_v.num, tb_v.den, sar.num, sar.den, colorspace, color_range
     ))
     .map_err(|e| e.to_string())?;
 
@@ -981,6 +989,9 @@ fn build_video_filter<'g>(
     let outputs = AVFilterInOut::new(c"in", &mut src, 0);
     let inputs = AVFilterInOut::new(c"out", &mut sink, 0);
     let descr = if is_hdr {
+        // HDR→BT.709 SDR tonemap (full-range RGB out for the GPU upload). If the result still reads a
+        // touch dark after correct input signaling, nudge `brightness` (-1..1, the midtone lift the
+        // CLI path approximates with `eq=gamma=1.3`) or `contrast` (default 1) here.
         CString::new(format!(
             "libplacebo=w={w}:h={h}:tonemapping=auto:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=pc,format=rgba"
         ))

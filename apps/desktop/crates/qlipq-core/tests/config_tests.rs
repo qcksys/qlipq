@@ -26,11 +26,18 @@ fn parse_deep_merges_output_keeping_defaults() {
 }
 
 #[test]
-fn parse_repairs_invalid_enums_and_clamps_crf() {
-    let merged = config_json::parse(r#"{"output":{"qualityPreset":"ultra","crf":99,"videoCodec":"av1"}}"#);
-    assert_eq!(merged.output.quality_preset, QualityPreset::Original);
-    assert_eq!(merged.output.crf, 51);
-    assert_eq!(merged.output.video_codec, VideoCodecChoice::Libx264);
+fn parse_accepts_numbers_as_is() {
+    // serde doesn't range-check (the derived schema documents 0–51; the editor + UI enforce it).
+    let merged = config_json::parse(r#"{"output":{"crf":99}}"#);
+    assert_eq!(merged.output.crf, 99);
+}
+
+#[test]
+fn parse_reverts_to_default_on_invalid_value() {
+    // Unlike the old hand-written parser, serde is all-or-nothing per document: an invalid enum value
+    // makes the whole config revert to defaults rather than repairing that one field.
+    let merged = config_json::parse(r#"{"outputFolder":"D:/out","output":{"qualityPreset":"ultra"}}"#);
+    assert_eq!(merged, AppConfig::default());
 }
 
 #[test]

@@ -26,6 +26,7 @@ use libav::{start_player, Player as PreviewPlayer, ScrubDecoder};
 use host::{start_player, Player as PreviewPlayer, ScrubDecoder};
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -191,6 +192,8 @@ struct Editor {
     exporting: bool,
     progress: Arc<Mutex<f32>>,
     progress_display: f32,
+    /// Set true to abort the in-process export (the worker polls it). Held so the Cancel button works.
+    export_cancel: Option<Arc<AtomicBool>>,
     overwrite_target: Option<String>,
     after_prompt: bool,
 }
@@ -258,6 +261,7 @@ enum Message {
     AddTag,
     RemoveTag(String),
     Export,
+    CancelExport,
     ExportFinished(String, Result<(), String>),
     AfterChoice(AfterExportAction),
     Overwrite(u8),
@@ -760,6 +764,13 @@ impl App {
                 }
             }
             Message::Export => return self.start_export(false),
+            Message::CancelExport => {
+                if let Some(ed) = &self.editor {
+                    if let Some(c) = &ed.export_cancel {
+                        c.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
             Message::Overwrite(choice) => {
                 if let Some(ed) = &mut self.editor {
                     let target = ed.overwrite_target.take();
@@ -1070,6 +1081,7 @@ impl App {
             exporting: false,
             progress: Arc::new(Mutex::new(0.0)),
             progress_display: 0.0,
+            export_cancel: None,
             overwrite_target: None,
             after_prompt: false,
         });
@@ -1197,10 +1209,12 @@ impl App {
         self.export_target = Some(output_path.clone());
 
         let progress = Arc::new(Mutex::new(0.0_f32));
+        let cancel = Arc::new(AtomicBool::new(false));
         if let Some(ed) = &mut self.editor {
             ed.exporting = true;
             ed.progress_display = 0.0;
             ed.progress = Arc::clone(&progress);
+            ed.export_cancel = Some(Arc::clone(&cancel));
             // Stop the preview decoder so it doesn't contend with the export for CPU.
             ed.playing = false;
             ed.player = None;
@@ -1210,7 +1224,7 @@ impl App {
             item.error = None;
         }
 
-        self.spawn_export(id, item.path.clone(), output_path, spec, output, media, total, metadata, is_hdr, progress)
+        self.spawn_export(id, item.path.clone(), output_path, spec, output, media, total, metadata, is_hdr, progress, cancel)
     }
 
     /// In-process export: decode → edits → hardware encode → mux ([`export::run_export`]). No CLI.
@@ -1228,8 +1242,8 @@ impl App {
         metadata: Vec<(String, String)>,
         is_hdr: bool,
         progress: Arc<Mutex<f32>>,
+        cancel: Arc<AtomicBool>,
     ) -> Task<Message> {
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         Task::perform(
             blocking(move || {
                 export::run_export(&input, &output_path, &spec, &output, &media, is_hdr, &metadata, progress, cancel)
@@ -1253,6 +1267,7 @@ impl App {
         metadata: Vec<(String, String)>,
         _is_hdr: bool,
         progress: Arc<Mutex<f32>>,
+        _cancel: Arc<AtomicBool>,
     ) -> Task<Message> {
         let encode = output_settings_to_encode(&output, &media);
         let args = build_export_args(&BuildExportOptions {
@@ -1276,10 +1291,19 @@ impl App {
         if let Some(ed) = &mut self.editor {
             if ed.item_id == id {
                 ed.exporting = false;
+                ed.export_cancel = None;
                 ed.progress_display = if result.is_ok() { 1.0 } else { ed.progress_display };
             }
         }
         let export_path = self.export_target.take();
+        // A user-cancelled export isn't an error: reset the item, don't show an error banner.
+        if matches!(&result, Err(e) if e == "cancelled") {
+            if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
+                item.status = QueueStatus::Pending;
+                item.error = None;
+            }
+            return Task::none();
+        }
         match result {
             Ok(()) => {
                 if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {

@@ -39,6 +39,7 @@ jobs:
       - name: Test shared crates
         run: cargo test -p qlipq-core -p qlipq-ffmpeg
 
-      # Compile the desktop app (running needs a display + ffmpeg on PATH).
+      # Compile the desktop app. libav-preview is the default feature, but it needs a local FFmpeg
+      # SDK (wired via the gitignored .cargo/config.toml), so CI builds the dependency-light CLI path.
       - name: Build desktop app
-        run: cargo build -p qlipq-desktop
+        run: cargo build -p qlipq-desktop --no-default-features

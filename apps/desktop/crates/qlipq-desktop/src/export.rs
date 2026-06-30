@@ -15,7 +15,7 @@ use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rsmpeg::avcodec::{AVCodec, AVCodecContext};
+use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVCodecParameters};
 use rsmpeg::avfilter::{AVFilter, AVFilterContextMut, AVFilterGraph};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput};
 use rsmpeg::avutil::{AVDictionary, AVFrame};
@@ -44,7 +44,17 @@ pub fn run_export(
     cancel: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let temp_path = format!("{output_path}.part.mp4");
-    let result = export_inner(input_path, &temp_path, spec, settings, media, is_hdr, metadata, &progress, &cancel);
+    // Stream-copy (remux) the video when nothing forces a re-encode (Original quality, no crop /
+    // downscale / fps change) — a lossless, fast trim. Audio is still mixed/encoded. Otherwise
+    // decode → filter → hardware-encode.
+    let resolved = output_settings_to_encode(settings, media);
+    let video_reencode =
+        spec.crop.is_some() || resolved.video.scale_height.is_some() || resolved.video.fps.is_some() || resolved.reencode;
+    let result = if video_reencode {
+        export_transcode(input_path, &temp_path, spec, settings, media, is_hdr, metadata, &progress, &cancel)
+    } else {
+        export_remux(input_path, &temp_path, spec, settings, media, metadata, &progress, &cancel)
+    };
     match result {
         Ok(()) => {
             let _ = std::fs::remove_file(output_path); // overwrite target if present
@@ -68,8 +78,9 @@ struct TrackDec<'g> {
     src: AVFilterContextMut<'g>,
 }
 
+/// Full decode → filter (trim/crop/scale/fps) → hardware-encode → mux path.
 #[allow(clippy::too_many_arguments)]
-fn export_inner(
+fn export_transcode(
     input_path: &str,
     temp_path: &str,
     spec: &EditSpec,
@@ -265,6 +276,167 @@ fn export_inner(
         encode_audio_frame(ae, None, &mut octx, a_stream.unwrap(), ao)?;
     }
     let _ = flushed_audio_srcs;
+
+    octx.write_trailer().map_err(|e| format!("write_trailer: {e:?}"))?;
+    Ok(())
+}
+
+/// Lossless trim: **stream-copy** the video (seek to the keyframe ≤ start, copy packets with their
+/// timestamps rebased to the trim) while audio is still decoded → mixed → AAC-encoded. The video
+/// keyframe pre-roll (the gap from the keyframe to the exact in-point) is handled by the muxer's
+/// `avoid_negative_ts`, which shifts all streams together so A/V stays in sync.
+fn export_remux(
+    input_path: &str,
+    temp_path: &str,
+    spec: &EditSpec,
+    settings: &OutputSettings,
+    media: &MediaInfo,
+    metadata: &[(String, String)],
+    progress: &Arc<Mutex<f32>>,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let start = spec.trim.as_ref().map(|t| t.start_sec).unwrap_or(0.0).max(0.0);
+    let end = spec.trim.as_ref().map(|t| t.end_sec).unwrap_or(media.duration_sec).max(start);
+    let dur = (end - start).max(0.001);
+
+    let cin = CString::new(input_path).map_err(|e| e.to_string())?;
+    let mut ictx = AVFormatContextInput::open(&cin).map_err(|e| format!("open input: {e:?}"))?;
+    let vid_idx = ictx
+        .find_best_stream(ffi::AVMEDIA_TYPE_VIDEO)
+        .map_err(|e| format!("{e:?}"))?
+        .map(|(i, _)| i)
+        .ok_or("no video stream")? as i32;
+    let in_tb = ictx.streams()[vid_idx as usize].time_base;
+    let in_tb_secs = in_tb.num as f64 / in_tb.den.max(1) as f64;
+
+    // Enabled audio tracks (audio-relative index → absolute), same as the transcode path.
+    let audio_abs: Vec<i32> = ictx
+        .streams()
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.codecpar().codec_type == ffi::AVMEDIA_TYPE_AUDIO)
+        .map(|(i, _)| i as i32)
+        .collect();
+    let enabled: Vec<(i32, f64)> = spec
+        .audio_tracks
+        .iter()
+        .filter(|t| t.enabled)
+        .filter_map(|t| audio_abs.get(t.index.max(0) as usize).map(|&abs| (abs, t.volume)))
+        .collect();
+    let has_audio = !enabled.is_empty();
+
+    if start > 0.0 && in_tb.num != 0 {
+        let ts = (start / in_tb_secs) as i64;
+        let _ = ictx.seek(vid_idx, ts, ffi::AVSEEK_FLAG_BACKWARD as i32);
+    }
+
+    // Audio: decoders + amix graph + AAC encoder (identical to the transcode path).
+    let agraph = AVFilterGraph::new();
+    let mut tracks: Vec<TrackDec> = Vec::new();
+    let mut aenc: Option<AVCodecContext> = None;
+    let mut asink_opt: Option<AVFilterContextMut> = None;
+    if has_audio {
+        let aencoder = build_audio_encoder(settings)?;
+        let frame_size = if aencoder.frame_size > 0 { aencoder.frame_size as u32 } else { 1024 };
+        let (decs, asink) = build_audio_graph(&agraph, &ictx, &enabled, start, end, frame_size)?;
+        tracks = decs;
+        asink_opt = Some(asink);
+        aenc = Some(aencoder);
+    }
+
+    // Copy the source video stream's parameters onto a new output stream (no encoder).
+    let mut vpar = AVCodecParameters::new();
+    unsafe {
+        ffi::avcodec_parameters_copy(vpar.as_mut_ptr(), ictx.streams()[vid_idx as usize].codecpar().as_ptr());
+    }
+
+    let cout = CString::new(temp_path).map_err(|e| e.to_string())?;
+    let mut octx = AVFormatContextOutput::create(&cout).map_err(|e| format!("create output: {e:?}"))?;
+    {
+        let mut s = octx.new_stream();
+        s.set_codecpar(vpar);
+        s.set_time_base(in_tb);
+    }
+    let a_stream = if let Some(ref ae) = aenc {
+        let mut s = octx.new_stream();
+        s.set_codecpar(ae.extract_codecpar());
+        s.set_time_base(ae.time_base);
+        Some(1usize)
+    } else {
+        None
+    };
+    unsafe {
+        let p = octx.as_mut_ptr();
+        // Keep the rebased (in-point = 0, keyframe pre-roll negative) timestamps so the mp4 muxer
+        // writes an edit list that starts presentation at the in-point — playback + duration match the
+        // trim, the keyframe pre-roll is carried but skipped on play.
+        (*p).avoid_negative_ts = ffi::AVFMT_AVOID_NEG_TS_DISABLED as i32;
+        for (k, val) in metadata {
+            if val.is_empty() {
+                continue;
+            }
+            if let (Ok(ck), Ok(cv)) = (CString::new(k.as_str()), CString::new(val.as_str())) {
+                ffi::av_dict_set(&mut (*p).metadata, ck.as_ptr(), cv.as_ptr(), 0);
+            }
+        }
+    }
+    let mut header_opts = Some(AVDictionary::new(c"movflags", c"+faststart", 0));
+    octx.write_header(&mut header_opts).map_err(|e| format!("write_header: {e:?}"))?;
+    let v_out_tb = octx.streams()[0].time_base;
+    let a_out_tb = a_stream.map(|i| octx.streams()[i].time_base);
+
+    let start_ts = (start / in_tb_secs) as i64; // trim start in input video time base
+
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        match ictx.read_packet() {
+            Ok(Some(mut pkt)) => {
+                if pkt.stream_index == vid_idx {
+                    let pos_secs = if pkt.pts != ffi::AV_NOPTS_VALUE { pkt.pts as f64 * in_tb_secs } else { start };
+                    // Copy only video within the out-point; keep reading a little past it so the audio
+                    // (capped by `atrim`) is complete before we stop.
+                    if pos_secs <= end {
+                        if pkt.pts != ffi::AV_NOPTS_VALUE {
+                            pkt.set_pts(pkt.pts - start_ts);
+                        }
+                        if pkt.dts != ffi::AV_NOPTS_VALUE {
+                            pkt.set_dts(pkt.dts - start_ts);
+                        }
+                        pkt.set_stream_index(0);
+                        pkt.rescale_ts(in_tb, v_out_tb);
+                        octx.interleaved_write_frame(&mut pkt).map_err(|e| format!("write video: {e:?}"))?;
+                    }
+                    if let Ok(mut p) = progress.lock() {
+                        *p = ((pos_secs - start) / dur).clamp(0.0, 0.999) as f32;
+                    }
+                    if pos_secs >= end + 0.5 {
+                        break;
+                    }
+                } else if let Some(t) = tracks.iter_mut().find(|t| t.abs_idx == pkt.stream_index) {
+                    let _ = t.dec.send_packet(Some(&pkt));
+                    feed_audio_decoder(t);
+                    if let (Some(ae), Some(asink), Some(ao)) = (aenc.as_mut(), asink_opt.as_mut(), a_out_tb) {
+                        drain_audio(asink, ae, &mut octx, a_stream.unwrap(), ao)?;
+                    }
+                }
+            }
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+
+    // Flush audio (decoders → abuffer EOF → drain → encoder flush).
+    if let (Some(ae), Some(asink), Some(ao)) = (aenc.as_mut(), asink_opt.as_mut(), a_out_tb) {
+        for t in tracks.iter_mut() {
+            let _ = t.dec.send_packet(None);
+            feed_audio_decoder(t);
+            let _ = t.src.buffersrc_add_frame(None, None);
+        }
+        drain_audio(asink, ae, &mut octx, a_stream.unwrap(), ao)?;
+        encode_audio_frame(ae, None, &mut octx, a_stream.unwrap(), ao)?;
+    }
 
     octx.write_trailer().map_err(|e| format!("write_trailer: {e:?}"))?;
     Ok(())

@@ -8,10 +8,11 @@ license.workspace = true
 name = "qlipq"
 path = "src/main.rs"
 
-# In-process libav preview (decode + libplacebo tonemap + cpal audio). Opt-in: needs a shared
-# FFmpeg dev build wired via .cargo/config.toml, so it's off by default (CI / other machines build
-# the CLI-preview path with no native libav/audio dependency).
+# In-process libav preview (decode + libplacebo tonemap + cpal audio). This is the **default** local
+# build; it needs a shared FFmpeg dev build wired via .cargo/config.toml. CI and the release builds
+# pass `--no-default-features` to get the dependency-light CLI-preview path (no native libav/audio).
 [features]
+default = ["libav-preview"]
 libav-preview = ["dep:rsmpeg", "dep:cpal", "dep:ringbuf"]
 
 [[example]]
