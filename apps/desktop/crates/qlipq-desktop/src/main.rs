@@ -230,6 +230,8 @@ struct App {
     delete_confirm: Option<String>,
     new_tag: String,
     export_target: Option<String>,
+    /// Queue card currently under the cursor (whole-card hover styling).
+    hovered_card: Option<String>,
     /// The video preview is expanded to fill the window.
     fullscreen: bool,
     /// Multiplier on the preview pane height (zoom control).
@@ -244,7 +246,6 @@ enum Message {
     ShowQueue,
     ShowSettings,
     OpenRepo,
-    OpenFfmpeg,
     RescanAll,
     Scanned(Vec<String>),
     FileInfoLoaded(Vec<(String, i64, i64)>),
@@ -256,6 +257,9 @@ enum Message {
     Skip(f64),
     ToggleFullscreen,
     PreviewZoom(f32),
+    HoverCard(String),
+    HoverLeave(String),
+    RevealItem(String),
     TimestampEdited(String),
     TimestampSubmit,
     EditorKey(iced::keyboard::Key, iced::keyboard::Modifiers),
@@ -363,6 +367,7 @@ impl App {
             delete_confirm: None,
             new_tag: String::new(),
             export_target: None,
+            hovered_card: None,
             fullscreen: false,
             preview_scale: 1.0,
             theme: theme::dark(),
@@ -526,7 +531,6 @@ impl App {
             Message::ToggleFullscreen => self.fullscreen = !self.fullscreen,
             Message::PreviewZoom(delta) => self.preview_scale = (self.preview_scale + delta).clamp(0.5, 2.5),
             Message::OpenRepo => host::open_external("https://github.com/qcksys/qlipq"),
-            Message::OpenFfmpeg => host::open_external("https://ffmpeg.org"),
             Message::RescanAll => {
                 let folders = self.config.watched_folders.clone();
                 let exts = self.config.video_extensions.clone();
@@ -830,6 +834,13 @@ impl App {
                     }
                 }
             }
+            Message::HoverCard(id) => self.hovered_card = Some(id),
+            Message::HoverLeave(id) => {
+                if self.hovered_card.as_deref() == Some(id.as_str()) {
+                    self.hovered_card = None;
+                }
+            }
+            Message::RevealItem(path) => host::reveal(&path),
             Message::RenameOpen(id) => {
                 if let Some(item) = self.items.iter().find(|i| i.id == id) {
                     let (name, _) = rename::split_file_name(&item.file_name);

@@ -13,7 +13,6 @@ impl App {
             .style(|t: &Theme| text::Style { color: Some(t.extended_palette().primary.base.color) });
         let bar = row![
             brand,
-            button(text("Powered by FFmpeg").size(theme::SMALL)).style(theme::btn_link).on_press(Message::OpenFfmpeg),
             Space::new().width(Length::Fill),
             button(text(format!("Queue ({pending})")).size(theme::LABEL)).style(theme::nav(matches!(self.view, View::Queue))).on_press(Message::ShowQueue),
             button(text("Settings").size(theme::LABEL)).style(theme::nav(matches!(self.view, View::Settings))).on_press(Message::ShowSettings),
@@ -96,7 +95,7 @@ impl App {
         )
         .width(Length::Fill)
         .padding([theme::XS, 0.0])
-        .style(theme::btn_ghost)
+        .style(theme::btn_plain)
         .on_press(Message::SelectItem(item.id.clone()));
 
         let mut card = column![open].spacing(theme::SM);
@@ -112,6 +111,10 @@ impl App {
 
         let actions = row![
             button(text("Rename").size(theme::SMALL)).style(theme::btn_secondary).on_press(Message::RenameOpen(item.id.clone())),
+            with_tip(
+                button(text("Open").size(theme::SMALL)).style(theme::btn_secondary).on_press(Message::RevealItem(item.path.clone())).into(),
+                "Show in file explorer".to_string(),
+            ),
             button(text(if item_dismissed(item) { "Restore" } else { "Dismiss" }).size(theme::SMALL)).style(theme::btn_secondary).on_press(Message::Dismiss(item.id.clone())),
             Space::new().width(Length::Fill),
             button(text("Delete").size(theme::SMALL)).style(theme::btn_danger).on_press(Message::RequestDelete(item.id.clone())),
@@ -119,7 +122,11 @@ impl App {
         .spacing(theme::XS);
         card = card.push(actions);
 
-        container(card).padding(theme::SM).style(theme::queue_card(selected)).into()
+        let hovered = self.hovered_card.as_deref() == Some(item.id.as_str());
+        mouse_area(container(card).padding(theme::SM).style(theme::queue_card(selected, hovered)))
+            .on_enter(Message::HoverCard(item.id.clone()))
+            .on_exit(Message::HoverLeave(item.id.clone()))
+            .into()
     }
 
     fn editor_view(&self) -> Element<'_, Message> {

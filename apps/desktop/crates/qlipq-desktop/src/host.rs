@@ -629,9 +629,12 @@ pub fn open_external(target: &str) {
 pub fn reveal(path: &str) {
     #[cfg(windows)]
     {
-        let _ = Command::new("explorer")
-            .arg(format!("/select,{}", path.replace('/', "\\")))
-            .spawn();
+        // explorer's `/select,` parsing breaks when Rust quotes the whole argument (which it does as
+        // soon as the path contains a space) — explorer then ignores it and opens the default folder.
+        // Use `raw_arg` and quote only the path so explorer gets `/select,"C:\dir\file name.mp4"`.
+        use std::os::windows::process::CommandExt;
+        let win = path.replace('/', "\\");
+        let _ = Command::new("explorer.exe").raw_arg(format!("/select,\"{win}\"")).spawn();
     }
     #[cfg(target_os = "macos")]
     {

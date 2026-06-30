@@ -152,7 +152,7 @@ pub fn status_dot(status: QueueStatus) -> impl Fn(&Theme) -> container::Style {
 }
 
 /// A queue card, styled to reflect its selection state (accent border + tint when selected).
-pub fn queue_card(selected: bool) -> impl Fn(&Theme) -> container::Style {
+pub fn queue_card(selected: bool, hovered: bool) -> impl Fn(&Theme) -> container::Style {
     move |theme| {
         let p = theme.extended_palette();
         if selected {
@@ -160,6 +160,13 @@ pub fn queue_card(selected: bool) -> impl Fn(&Theme) -> container::Style {
                 background: Some(Background::Color(p.primary.base.color.scale_alpha(0.16))),
                 border: Border { color: p.primary.base.color, width: 1.5, radius: Radius::from(RADIUS) },
                 shadow: shadow(0.25, 2.0, 10.0),
+                ..container::Style::default()
+            }
+        } else if hovered {
+            container::Style {
+                background: Some(Background::Color(C_SURFACE_HI)),
+                border: Border { color: C_BORDER_STRONG, width: 1.0, radius: Radius::from(RADIUS) },
+                shadow: shadow(0.22, 2.0, 10.0),
                 ..container::Style::default()
             }
         } else {
@@ -226,6 +233,17 @@ pub fn btn_danger(theme: &Theme, status: button::Status) -> button::Style {
     s
 }
 
+/// A fully transparent click target (no background in any state) — used inside a card that supplies
+/// its own background/hover, so the click region doesn't double-tint.
+pub fn btn_plain(theme: &Theme, _status: button::Status) -> button::Style {
+    button::Style {
+        background: None,
+        text_color: theme.extended_palette().background.base.text,
+        border: Border { radius: Radius::from(RADIUS_SM), ..Border::default() },
+        ..button::Style::default()
+    }
+}
+
 /// Low-emphasis / icon button: no chrome at rest, faint surface on hover.
 pub fn btn_ghost(theme: &Theme, status: button::Status) -> button::Style {
     let p = theme.extended_palette();
@@ -238,20 +256,6 @@ pub fn btn_ghost(theme: &Theme, status: button::Status) -> button::Style {
         text_color: match status {
             button::Status::Disabled => C_MUTED,
             _ => p.background.base.text,
-        },
-        border: Border { radius: Radius::from(RADIUS_SM), ..Border::default() },
-        ..button::Style::default()
-    }
-}
-
-/// Muted text button (links like "Powered by FFmpeg").
-pub fn btn_link(theme: &Theme, status: button::Status) -> button::Style {
-    let p = theme.extended_palette();
-    button::Style {
-        background: None,
-        text_color: match status {
-            button::Status::Hovered | button::Status::Pressed => p.primary.base.color,
-            _ => C_MUTED,
         },
         border: Border { radius: Radius::from(RADIUS_SM), ..Border::default() },
         ..button::Style::default()
