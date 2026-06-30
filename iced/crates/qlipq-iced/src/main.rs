@@ -30,6 +30,10 @@ use qlipq_ffmpeg::estimate::estimate_export_size;
 const DISMISSED_TAG: &str = "dismissed";
 const TICK: Duration = Duration::from_millis(250);
 
+/// Caps concurrent background duration probes so the editor's on-demand probe (and the system)
+/// are never starved by a folder full of recordings. Mirrors the web app's PROBE_CONCURRENCY=3.
+static PROBE_SEM: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
+
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
         .title("QlipQ")
@@ -365,16 +369,23 @@ impl App {
             }),
             Message::FileInfoLoaded,
         );
-        // Lazy-ish duration: probe each new file's duration in the background.
+        // Background duration probing, capped at PROBE_SEM permits so a large folder doesn't
+        // saturate the blocking pool and starve the editor's on-demand probe.
         let durations = Task::batch(to_probe.into_iter().map(move |path| {
             let ffprobe = ffprobe.clone();
             let id_path = path.clone();
-            Task::perform(blocking(move || host::probe(&path, &ffprobe)), move |res| {
-                Message::FileInfoLoaded(match res {
-                    Ok(m) => vec![(format!("dur:{id_path}"), m.duration_sec as i64, m.duration_sec.to_bits() as i64)],
-                    Err(_) => vec![],
-                })
-            })
+            Task::perform(
+                async move {
+                    let _permit = PROBE_SEM.acquire().await;
+                    blocking(move || host::probe(&path, &ffprobe)).await
+                },
+                move |res| {
+                    Message::FileInfoLoaded(match res {
+                        Ok(m) => vec![(format!("dur:{id_path}"), m.duration_sec as i64, m.duration_sec.to_bits() as i64)],
+                        Err(_) => vec![],
+                    })
+                },
+            )
         }));
         Task::batch([info, durations])
     }

@@ -8,10 +8,12 @@ application captured by the scene's **Game Capture** or **Window Capture** sourc
 The point of the port is to drop the **Python dependency**: OBS bundles LuaJIT,
 so a Lua script runs with no separate Python install or version/path setup.
 
-> **Published copy:** the website serves this script as a download at
-> `apps/website/public/recorder.lua` (qlipq.com/recorder.lua) and documents it in
-> [`guide/organize-by-game.md`](../apps/website/src/content/guide/organize-by-game.md).
-> `recorder.lua` here is the source of truth — keep the two byte-identical.
+> **This is the `qlipq-obs-script` workspace app.** `recorder.lua` here is the
+> source of truth. The website serves it as a download at `/recorder.lua`
+> (qlipq.com/recorder.lua), documented in
+> [`organize-by-game.md`](../website/src/content/guide/organize-by-game.md).
+> `vp run qlipq-obs-script#build` republishes the copy under `apps/website/public/`;
+> `vp run qlipq-obs-script#test` fails if the two have drifted.
 
 ## Install
 
@@ -84,8 +86,13 @@ per-scene config table, respectively).
 
 ## Relationship to qlipq
 
-Standalone — this script is **not** part of any qlipq workspace (it deliberately
-lives outside the pnpm/cargo packages). qlipq itself avoids running inside OBS
-by design, recovering scene/game metadata after the fact from OBS filename
-prefixes + `ffprobe`. This script is the opposite approach: detect the game
-**live** from inside OBS at capture time.
+It lives in the monorepo as the `qlipq-obs-script` app, but it is operationally
+independent of the qlipq desktop app — it is an OBS script, not a build target.
+Its only build step republishes `recorder.lua` to the website's downloads.
+
+qlipq itself avoids running inside OBS by design, recovering scene/game metadata
+after the fact from OBS filename prefixes + `ffprobe`. This script is the opposite
+approach: detect the game **live** from inside OBS at capture time. The two
+compose — the per-game folders this script creates are exactly what qlipq reads
+back as a clip's `{source}`. See
+[`organize-by-game.md`](../website/src/content/guide/organize-by-game.md).
