@@ -198,6 +198,13 @@ pub fn check_binary(path: &str) -> Result<String, String> {
 }
 
 pub fn probe(path: &str, ffprobe_path: &str) -> Result<MediaInfo, String> {
+    probe_with_hdr(path, ffprobe_path).map(|(media, _)| media)
+}
+
+/// Probe like [`probe`], but also report whether the video stream is HDR (PQ/HLG).
+/// HDR detection reads `color_transfer` straight from the ffprobe JSON in the host layer — the
+/// shared `qlipq-ffmpeg` parse stays untouched so cross-port parity is unaffected.
+pub fn probe_with_hdr(path: &str, ffprobe_path: &str) -> Result<(MediaInfo, bool), String> {
     let output = hidden_command(ffprobe_path)
         .args(build_probe_args(path))
         .output()
@@ -205,7 +212,46 @@ pub fn probe(path: &str, ffprobe_path: &str) -> Result<MediaInfo, String> {
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
-    Ok(parse_ffprobe(&String::from_utf8_lossy(&output.stdout)))
+    let json = String::from_utf8_lossy(&output.stdout);
+    Ok((parse_ffprobe(&json), detect_hdr(&json)))
+}
+
+/// True if the file's video stream uses an HDR transfer function (PQ `smpte2084` or HLG).
+fn detect_hdr(probe_json: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct ColorProbe {
+        streams: Option<Vec<ColorStream>>,
+    }
+    #[derive(serde::Deserialize)]
+    struct ColorStream {
+        codec_type: Option<String>,
+        color_transfer: Option<String>,
+    }
+    serde_json::from_str::<ColorProbe>(probe_json)
+        .ok()
+        .and_then(|p| p.streams)
+        .unwrap_or_default()
+        .iter()
+        .find(|s| s.codec_type.as_deref() == Some("video"))
+        .and_then(|s| s.color_transfer.as_deref())
+        .is_some_and(|t| matches!(t, "smpte2084" | "arib-std-b67"))
+}
+
+/// Build the preview filter chain. For HDR sources, tonemap BT.2020 PQ/HLG → BT.709 SDR (otherwise
+/// HDR is shown with washed-out/clipped colors); for SDR, a plain scale. Both fix the output size so
+/// the raw RGBA byte count is exact. Pass `fps` for the streaming decoder (resamples the rate).
+fn preview_vf(w: u32, h: u32, is_hdr: bool, fps: Option<f64>) -> String {
+    let fps_part = fps.map(|f| format!(",fps={f:.5}")).unwrap_or_default();
+    if is_hdr {
+        // zscale resizes + linearizes from the source's HDR transfer, Hable tonemaps to SDR, then
+        // back to BT.709 limited-range; `-pix_fmt rgba` does the final 8-bit conversion.
+        format!(
+            "zscale=w={w}:h={h}:t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,\
+             tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv{fps_part}"
+        )
+    } else {
+        format!("scale={w}:{h}{fps_part}")
+    }
 }
 
 /// Preview output dimensions: scaled to ≤720 tall (never upscaled), preserving aspect.
@@ -226,10 +272,11 @@ pub fn extract_frame(
     sec: f64,
     src_w: i64,
     src_h: i64,
+    is_hdr: bool,
 ) -> Result<(u32, u32, Vec<u8>), String> {
     let (w, h) = preview_dims(src_w, src_h);
     let sec_arg = format!("{:.3}", sec.max(0.0));
-    let vf = format!("scale={w}:{h}");
+    let vf = preview_vf(w, h, is_hdr, None);
     let mut output = hidden_command(ffmpeg_path)
         .args([
             "-hide_banner", "-loglevel", "error", "-ss", &sec_arg, "-i", path, "-frames:v", "1",
@@ -305,11 +352,12 @@ pub fn start_player(
     src_w: i64,
     src_h: i64,
     src_fps: f64,
+    is_hdr: bool,
 ) -> Option<Player> {
     let (w, h) = preview_dims(src_w, src_h);
     let fps = if src_fps.is_finite() && src_fps > 0.0 { src_fps.min(30.0) } else { 30.0 };
     let start = format!("{:.3}", start_sec.max(0.0));
-    let vf = format!("scale={w}:{h},fps={fps:.5}");
+    let vf = preview_vf(w, h, is_hdr, Some(fps));
 
     let mut child = hidden_command(ffmpeg_path)
         .args([

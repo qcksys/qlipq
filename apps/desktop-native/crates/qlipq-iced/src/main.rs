@@ -144,6 +144,8 @@ struct Editor {
     /// Latest decoded preview frame, shared with the `video` shader widget (persistent GPU texture).
     shared_frame: video::SharedFrame,
     has_frame: bool,
+    /// Source is HDR (PQ/HLG) — the preview must tonemap to SDR.
+    is_hdr: bool,
     frame_dirty: bool,
     extracting: bool,
     playing: bool,
@@ -194,7 +196,7 @@ enum Message {
     FileInfoLoaded(Vec<(String, i64, i64)>),
     PresetsDetected(Option<String>, Option<String>),
     SelectItem(String),
-    MediaProbed(String, Result<MediaInfo, String>),
+    MediaProbed(String, Result<(MediaInfo, bool), String>),
     FrameExtracted(String, Option<(u32, u32, Vec<u8>)>),
     Seek(f64),
     Skip(f64),
@@ -797,10 +799,16 @@ impl App {
             host::FramePoll::Frame(bytes) => {
                 video::push_frame(&ed.shared_frame, w, h, bytes);
                 ed.has_frame = true;
-                // Advance the playhead by one frame. End-of-clip is signalled authoritatively by
-                // `Ended` (ffmpeg closing the pipe at real EOF) — don't terminate on the probed
-                // duration, which may be 0/unknown or slightly short. The scrubber clamps display.
                 ed.current_time += 1.0 / fps;
+                // Hard-stop at the known end so playback halts cleanly and never overruns or loops.
+                // `Ended` (ffmpeg EOF) below remains the fallback when the duration is unknown/0.
+                if let Some(dur) = ed.media.as_ref().map(|m| m.duration_sec).filter(|d| *d > 0.0) {
+                    if ed.current_time >= dur {
+                        ed.current_time = dur;
+                        ed.playing = false;
+                        ed.player = None;
+                    }
+                }
             }
             host::FramePoll::Empty => {}
             host::FramePoll::Ended => {
@@ -819,11 +827,11 @@ impl App {
         let snap = match self.editor.as_ref() {
             Some(ed) if !ed.playing && ed.media.is_some() => {
                 let m = ed.media.as_ref().unwrap();
-                Some((ed.extracting, ed.current_time, ed.item_id.clone(), m.width, m.height))
+                Some((ed.extracting, ed.current_time, ed.item_id.clone(), m.width, m.height, ed.is_hdr))
             }
             _ => None,
         };
-        let Some((extracting, sec, id, mw, mh)) = snap else { return Task::none() };
+        let Some((extracting, sec, id, mw, mh, is_hdr)) = snap else { return Task::none() };
         if extracting {
             if let Some(ed) = &mut self.editor {
                 ed.frame_dirty = true;
@@ -839,7 +847,7 @@ impl App {
             ed.frame_dirty = false;
         }
         Task::perform(
-            blocking(move || host::extract_frame(&path, &ffmpeg, sec, mw, mh).ok()),
+            blocking(move || host::extract_frame(&path, &ffmpeg, sec, mw, mh, is_hdr).ok()),
             move |frame| Message::FrameExtracted(id.clone(), frame),
         )
     }
@@ -850,18 +858,18 @@ impl App {
         let snap = match self.editor.as_ref() {
             Some(ed) if ed.media.is_some() => {
                 let m = ed.media.as_ref().unwrap();
-                Some((ed.item_id.clone(), ed.current_time, m.width, m.height, m.fps, m.duration_sec))
+                Some((ed.item_id.clone(), ed.current_time, m.width, m.height, m.fps, m.duration_sec, ed.is_hdr))
             }
             _ => None,
         };
-        let Some((id, cur, mw, mh, mfps, dur)) = snap else { return Task::none() };
+        let Some((id, cur, mw, mh, mfps, dur, is_hdr)) = snap else { return Task::none() };
         // Restart from the top only when we know we're at the real end (avoid rewinding on a 0/unknown duration).
         let start = if dur > 0.0 && cur >= dur { 0.0 } else { cur };
         let Some(path) = self.items.iter().find(|i| i.id == id).map(|i| i.path.clone()) else {
             return Task::none();
         };
         let ffmpeg = self.config.ffmpeg_path.clone();
-        let player = host::start_player(&path, &ffmpeg, start, mw, mh, mfps);
+        let player = host::start_player(&path, &ffmpeg, start, mw, mh, mfps, is_hdr);
         let started = player.is_some();
         if let Some(ed) = &mut self.editor {
             ed.current_time = start;
@@ -889,6 +897,7 @@ impl App {
             current_time: 0.0,
             shared_frame: video::new_shared_frame(),
             has_frame: false,
+            is_hdr: false,
             frame_dirty: false,
             extracting: false,
             playing: false,
@@ -901,17 +910,18 @@ impl App {
         });
         let path = item.path.clone();
         let ffprobe = self.config.ffprobe_path.clone();
-        Task::perform(blocking(move || host::probe(&path, &ffprobe)), move |r| Message::MediaProbed(id.clone(), r))
+        Task::perform(blocking(move || host::probe_with_hdr(&path, &ffprobe)), move |r| Message::MediaProbed(id.clone(), r))
     }
 
-    fn on_media_probed(&mut self, id: String, result: Result<MediaInfo, String>) {
+    fn on_media_probed(&mut self, id: String, result: Result<(MediaInfo, bool), String>) {
         let Some(ed) = &mut self.editor else { return };
         if ed.item_id != id {
             return;
         }
         match result {
             Err(e) => ed.load_error = Some(e),
-            Ok(media) => {
+            Ok((media, is_hdr)) => {
+                ed.is_hdr = is_hdr;
                 let stored_edit = self.items.iter().find(|i| i.id == id).and_then(|i| i.edit.clone());
                 if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
                     item.duration_sec = Some(media.duration_sec);

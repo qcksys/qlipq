@@ -215,12 +215,14 @@ end
 local function quote(s) return '"' .. s .. '"' end
 
 -- Run a pre-quoted command synchronously; true on exit 0. On Windows the whole
--- command gets an extra outer quote pair because `cmd /c` strips one.
+-- command gets an extra outer quote pair because `cmd /c` strips one (verified:
+-- without it, a program path containing a space is split and fails).
 local function run(args)
   local cmd = table.concat(args, " ")
   if IS_WINDOWS then cmd = '"' .. cmd .. '"' end
   local res = os.execute(cmd)
-  return res == 0 or res == true
+  if type(res) == "number" then return res == 0 end
+  return res == true
 end
 
 -- Stream-copy src -> dest, embedding the game as container metadata (no re-encode).
@@ -243,8 +245,12 @@ local function tag_and_place(src, dest, dest_dir, game)
     obs.os_unlink(tmp)
     obs.script_log(obs.LOG_WARNING,
       "QlipQRenamer: ffmpeg metadata write failed (check the ffmpeg path / container support); original kept: " .. src)
-    if dest ~= src and obs.os_rename(src, dest) == 0 then
-      obs.script_log(obs.LOG_INFO, "QlipQRenamer: moved (untagged) to " .. dest)
+    if dest ~= src then
+      if obs.os_rename(src, dest) == 0 then
+        obs.script_log(obs.LOG_INFO, "QlipQRenamer: moved (untagged) to " .. dest)
+      else
+        obs.script_log(obs.LOG_WARNING, "QlipQRenamer: fallback move also failed; left at " .. src)
+      end
     end
     return
   end
@@ -257,7 +263,9 @@ local function tag_and_place(src, dest, dest_dir, game)
       return
     end
     if obs.os_rename(tmp, dest) == 0 then
-      obs.os_unlink(bak)
+      if obs.os_unlink(bak) ~= 0 then
+        obs.script_log(obs.LOG_WARNING, "QlipQRenamer: tagged, but could not remove backup: " .. bak)
+      end
       obs.script_log(obs.LOG_INFO, "QlipQRenamer: tagged in place: " .. dest)
     else
       obs.os_rename(bak, src) -- restore the original
@@ -326,30 +334,49 @@ local function move_file(src_path, kind)
   end
 end
 
--- The frontend helper can return empty right after the SAVED event, so fall back
--- to the replay output's get_last_replay proc (reliable). Guard the helper in case
--- the binding is absent on some OBS versions.
+-- Resolve the just-saved replay's path. The frontend helper can be empty right
+-- after the SAVED event, so fall back to the replay output's get_last_replay proc.
+-- Every binding is guarded so this can never raise (OBS would swallow the error).
+-- Returns (path, via) — `via` names the source (or the reason it's nil) for the log.
 local function last_replay_path()
-  local get = obs.obs_frontend_get_last_replay
-  local p = type(get) == "function" and get() or nil
-  if p and p ~= "" then return p end
+  if type(obs.obs_frontend_get_last_replay) == "function" then
+    local p = obs.obs_frontend_get_last_replay()
+    if p and p ~= "" then return p, "frontend" end
+  end
+  if type(obs.obs_frontend_get_replay_buffer_output) ~= "function" then
+    return nil, "no replay-output binding"
+  end
   local rb = obs.obs_frontend_get_replay_buffer_output()
-  if rb == nil then return p end
-  local cd = obs.calldata_create()
-  obs.proc_handler_call(obs.obs_output_get_proc_handler(rb), "get_last_replay", cd)
-  p = obs.calldata_string(cd, "path")
-  obs.calldata_destroy(cd)
+  if rb == nil then return nil, "replay output is nil (buffer inactive?)" end
+  local p
+  local ph = obs.obs_output_get_proc_handler(rb)
+  if ph ~= nil then
+    local cd = obs.calldata_create()
+    obs.proc_handler_call(ph, "get_last_replay", cd)
+    p = obs.calldata_string(cd, "path")
+    obs.calldata_destroy(cd)
+  end
   obs.obs_output_release(rb)
-  return p
+  if p and p ~= "" then return p, "proc" end
+  return nil, "empty path from proc"
 end
 
 local function on_event(event)
   if event == obs.OBS_FRONTEND_EVENT_RECORDING_STOPPED then
     move_file(obs.obs_frontend_get_last_recording(), "recording")
   elseif event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_SAVED then
-    if state.organize_replays then
-      move_file(last_replay_path(), "replay")
+    -- Always log on the event so we can see whether it fires at all.
+    if not state.organize_replays then
+      obs.script_log(obs.LOG_INFO, "QlipQRenamer: replay saved, but 'Organize replay-buffer saves' is off")
+      return
     end
+    local ok, path, via = pcall(last_replay_path)
+    if not ok then
+      obs.script_log(obs.LOG_WARNING, "QlipQRenamer: replay path lookup errored: " .. tostring(path))
+      return
+    end
+    obs.script_log(obs.LOG_INFO, ("QlipQRenamer: replay saved (path via %s): %s"):format(tostring(via), tostring(path)))
+    move_file(path, "replay")
   elseif event == obs.OBS_FRONTEND_EVENT_SCREENSHOT_TAKEN then
     if state.organize_screenshots then
       move_file(obs.obs_frontend_get_last_screenshot(), "screenshot")
