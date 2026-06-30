@@ -1,6 +1,5 @@
-//! Pure domain logic for qlipq — a Rust port of `@qcksys/qlipq-core`.
-//! No I/O; mirrors the TypeScript package (and the C# `Qlipq.Core`) so the three
-//! implementations stay behaviour-compatible.
+//! Pure domain logic for qlipq (queue, edit spec, media info, config, OBS filename parsing,
+//! rename templating). No I/O — the single source of truth for the app's domain model.
 
 pub mod config;
 pub mod config_json;

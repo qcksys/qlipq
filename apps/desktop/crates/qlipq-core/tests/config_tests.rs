@@ -38,13 +38,22 @@ fn serialize_stamps_schema_and_round_trips() {
     let mut cfg = AppConfig::default();
     cfg.output_folder = "D:/out".into();
     let json = config_json::serialize(&cfg);
-    assert!(json.contains("\"$schema\": \"https://qlipq.com/schema/config.json\""));
+    assert!(json.contains("\"$schema\": \"./config.schema.json\""));
     assert!(json.contains("\"qualityPreset\": \"original\""));
     assert!(json.contains("\"videoCodec\": \"libx264\""));
 
     let round = config_json::parse(&json);
     assert_eq!(round.output_folder, "D:/out");
     assert_eq!(round.output.quality_preset, QualityPreset::Original);
+}
+
+#[test]
+fn schema_json_describes_config() {
+    let s = config_json::schema_json();
+    assert!(s.contains("\"$schema\""));
+    assert!(s.contains("\"watchedFolders\""));
+    assert!(s.contains("\"qualityPreset\""));
+    assert!(s.contains("\"afterExport\""));
 }
 
 #[test]

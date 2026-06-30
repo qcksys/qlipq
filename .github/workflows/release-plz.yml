@@ -1,0 +1,54 @@
+name: release-plz
+
+# Versioning + changelogs for the Rust crates in apps/desktop (release-plz). Crates are internal
+# (not published to crates.io); on merge to main it opens/updates a release PR, and tags the app
+# `vX.Y.Z` — which triggers qlipq-desktop-release.yml to build + publish the binaries.
+on:
+  push:
+    branches: [main]
+
+jobs:
+  # On merge of the release PR: bump versions, update changelogs, and tag the app.
+  release-plz-release:
+    name: release-plz release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5
+        with:
+          command: release
+          manifest_path: apps/desktop/Cargo.toml
+          config: apps/desktop/release-plz.toml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Open/update the release PR with the next versions + changelogs.
+  release-plz-pr:
+    name: release-plz PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+          manifest_path: apps/desktop/Cargo.toml
+          config: apps/desktop/release-plz.toml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,4 +1,4 @@
-//! ffmpeg/ffprobe argument building & output parsing — a Rust port of `@qcksys/qlipq-ffmpeg`.
+//! ffmpeg/ffprobe argument building & output parsing for qlipq.
 //! This is the single source of truth for the ffmpeg command line; the host only spawns it.
 
 pub mod args;

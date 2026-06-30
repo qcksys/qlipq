@@ -286,6 +286,7 @@ where
 impl App {
     fn new() -> (Self, Task<Message>) {
         host::migrate_legacy_data();
+        let _ = host::write_config_schema();
         let config = host::load_config();
         let edit_store = host::load_edit_store();
         let watcher = host::start_watch(&config.watched_folders, &config.video_extensions);

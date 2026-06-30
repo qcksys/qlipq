@@ -70,6 +70,14 @@ pub fn save_config(cfg: &AppConfig) -> std::io::Result<()> {
     std::fs::write(path, config_json::serialize(cfg))
 }
 
+/// Write the JSON Schema for `config.json` next to it, so editors validate the config against the
+/// relative `$schema` ref the app stamps. Called on startup; cheap to refresh.
+pub fn write_config_schema() -> std::io::Result<()> {
+    let dir = data_dir();
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join(config_json::SCHEMA_FILE), config_json::schema_json())
+}
+
 fn is_valid_name(name: &str) -> bool {
     !name.contains('/') && !name.contains('\\') && !name.contains("..")
 }

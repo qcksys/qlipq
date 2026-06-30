@@ -1,0 +1,15 @@
+# release-plz config for the qlipq desktop Cargo workspace.
+#
+# The crates here are internal path-deps, NOT published to crates.io — so versions are derived
+# from git tags (`git_only`) and `cargo publish` is skipped.
+[workspace]
+git_only = true # version from git tags; never run `cargo publish`
+git_release_enable = false # don't create a GitHub release per crate…
+git_tag_enable = false # …and no per-crate git tag by default
+
+# Only the app gets a single tag, `vX.Y.Z`. That tag triggers qlipq-desktop-release.yml, which
+# builds the binaries and creates the GitHub release — so release-plz only tags here (no release).
+[[package]]
+name = "qlipq-desktop"
+git_tag_enable = true
+git_tag_name = "v{{ version }}"

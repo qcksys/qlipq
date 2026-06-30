@@ -6,7 +6,9 @@ use serde_json::{Map, Value};
 
 use crate::config::*;
 
-pub const SCHEMA_URL: &str = "https://qlipq.com/schema/config.json";
+/// Filename of the JSON Schema the app writes next to `config.json`. `config.json`'s `$schema`
+/// points at it with a relative path, so editors validate against the local copy (no network).
+pub const SCHEMA_FILE: &str = "config.schema.json";
 
 /// Parse config JSON onto defaults, tolerating missing/invalid fields.
 pub fn parse(text: &str) -> AppConfig {
@@ -82,9 +84,57 @@ pub fn parse(text: &str) -> AppConfig {
 pub fn serialize(cfg: &AppConfig) -> String {
     let mut value = serde_json::to_value(cfg).expect("AppConfig serializes");
     if let Value::Object(ref mut map) = value {
-        map.insert("$schema".to_string(), Value::String(SCHEMA_URL.to_string()));
+        map.insert("$schema".to_string(), Value::String(format!("./{SCHEMA_FILE}")));
     }
     serde_json::to_string_pretty(&value).expect("Value serializes")
+}
+
+/// The JSON Schema describing [`AppConfig`] (camelCase keys, matching the serialized `config.json`).
+/// This is the single source of truth for the schema; the app writes it to disk next to the config.
+pub fn config_schema() -> Value {
+    serde_json::json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "qlipq configuration",
+        "description": "Schema for qlipq's config.json.",
+        "type": "object",
+        "properties": {
+            "watchedFolders": { "type": "array", "items": { "type": "string" } },
+            "outputFolder": { "type": "string" },
+            "videoExtensions": { "type": "array", "items": { "type": "string" } },
+            "namingTemplate": { "type": "string" },
+            "ffmpegPath": { "type": "string" },
+            "ffprobePath": { "type": "string" },
+            "afterExport": {
+                "type": "object",
+                "properties": {
+                    "action": { "enum": ["nothing", "delete", "move", "rename", "prompt"] },
+                    "moveFolder": { "type": "string" },
+                    "renamePrefix": { "type": "string" },
+                    "renameSuffix": { "type": "string" }
+                }
+            },
+            "output": {
+                "type": "object",
+                "properties": {
+                    "qualityMode": { "enum": ["preset", "crf", "bitrate", "vbr"] },
+                    "qualityPreset": { "enum": ["original", "high", "balanced", "small"] },
+                    "crf": { "type": "integer", "minimum": 0, "maximum": 51 },
+                    "videoBitrateKbps": { "type": "integer", "minimum": 0 },
+                    "encoderPreset": { "type": "string" },
+                    "videoCodec": { "enum": ["libx264", "libx265"] },
+                    "container": { "enum": ["mp4", "mkv"] },
+                    "fps": { "type": "integer", "minimum": 0 },
+                    "maxHeight": { "type": "integer", "minimum": 0 },
+                    "audioBitrateKbps": { "type": "integer", "minimum": 0 }
+                }
+            }
+        }
+    })
+}
+
+/// [`config_schema`] serialized as the pretty JSON the app writes to disk.
+pub fn schema_json() -> String {
+    serde_json::to_string_pretty(&config_schema()).expect("schema serializes")
 }
 
 fn read_str<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a str> {

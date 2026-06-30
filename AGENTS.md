@@ -115,11 +115,13 @@ Content Layer API: the `glob()` loader in
 `Base.astro`. Edit the `.md` files, not hand-written HTML. A change that alters
 functionality without updating the relevant guide markdown is incomplete.
 
-**Config schema.** The app's `config.json` is described by a hand-maintained JSON
-Schema in [schema/[id].json.ts](apps/website/src/pages/schema/[id].json.ts), hosted
-at `/schema/config-<VERSION>.json` with a `/schema/config.json` "latest" alias (the
-app stamps the alias). `VERSION` is a constant in that file — bump it and keep the
-schema's property list in sync whenever the Rust `AppConfig` shape changes.
+**Config schema.** The app owns its config schema. `config_json::config_schema()`
+([config_json.rs](apps/desktop/crates/qlipq-core/src/config_json.rs)) builds the JSON
+Schema for `AppConfig`, and the app writes it to `~/.com.qcksys.qlipq/config.schema.json`
+on startup (`host::write_config_schema`). `config.json`'s `$schema` is a **relative**
+ref (`./config.schema.json`), so editors validate against that local copy with no network.
+When you add/rename a config field, update `config_schema()` alongside the Rust struct.
+(There is no longer a website `/schema` route.)
 
 ## Commands
 
@@ -162,7 +164,9 @@ pnpm -C apps/website deploy:prod   # build + wrangler deploy --env production
   `overrides: { vitest }`. `esbuild`/`sharp`/`workerd` stay in `allowBuilds` (the
   website's Astro/Cloudflare build needs them).
 - **The desktop app builds with `cargo`, independently of `vp`.** Its crates
-  (`qlipq-core`, `qlipq-ffmpeg`, `qlipq-desktop`) version via `apps/desktop/Cargo.toml`.
+  (`qlipq-core`, `qlipq-ffmpeg`, `qlipq-desktop`) are internal path-deps (not on
+  crates.io); release-plz versions them from git tags (`apps/desktop/release-plz.toml`,
+  `git_only`).
 - **`libav-preview` wiring is machine-specific and gitignored.** It links a shared
   FFmpeg 8.x dev build via `apps/desktop/.cargo/config.toml` (`FFMPEG_*` env vars +
   the vendored `apps/desktop/vendor/rusty_ffmpeg_*_binding.rs`, which skips bindgen
@@ -171,5 +175,7 @@ pnpm -C apps/website deploy:prod   # build + wrangler deploy --env production
   raw `pnpm` subcommands via the Bash tool. `vp` itself is fine in PowerShell.
 - **CI** (`.github/workflows/`): `ci.yml` (website — `vp check` + build),
   `build-desktop.yml` (the Rust app — `cargo test` + `cargo build` on Windows + Linux;
-  `.cargo/config.toml` is gitignored, so CI builds the default no-libav path), and
-  `deploy-website.yml` (Cloudflare Workers).
+  `.cargo/config.toml` is gitignored, so CI builds the default no-libav path),
+  `deploy-website.yml` (Cloudflare Workers), `release-plz.yml` (versions/changelogs the
+  crates and tags the app `vX.Y.Z`), and `qlipq-desktop-release.yml` (on a `v*` tag,
+  builds + attaches the Windows/Linux binaries to a GitHub Release).

@@ -80,3 +80,7 @@ vp run qlipq-website#build      # static build into apps/website/dist
     Locally: `pnpm -C apps/website deploy:dev` / `deploy:prod`.
   - `build-desktop.yml` — builds the Rust desktop app and runs the crate tests
     on Windows and Linux.
+  - `release-plz.yml` — versions the Rust crates and tags the app `vX.Y.Z` on
+    merge to `main` (crates are internal — not published to crates.io).
+  - `qlipq-desktop-release.yml` — on a `v*` tag, builds and attaches the
+    Windows/Linux binaries to a GitHub Release.
