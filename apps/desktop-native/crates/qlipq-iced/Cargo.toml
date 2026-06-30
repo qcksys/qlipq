@@ -8,6 +8,16 @@ license.workspace = true
 name = "qlipq"
 path = "src/main.rs"
 
+# In-process libav preview (decode + libplacebo tonemap + cpal audio). Opt-in: needs a shared
+# FFmpeg dev build + libclang wired via .cargo/config.toml, so it's off by default (CI / other
+# machines build the CLI-preview path with no native libav dependency).
+[features]
+libav-preview = ["dep:rsmpeg"]
+
+[[example]]
+name = "smoke"
+required-features = ["libav-preview"]
+
 [dependencies]
 qlipq-core = { workspace = true }
 qlipq-ffmpeg = { workspace = true }
@@ -21,6 +31,9 @@ notify = "8.2"
 dirs = "6"
 rfd = "0.17"
 open = "5"
+# Optional: in-process FFmpeg (libav) for the libplacebo HDR preview + synced audio. Linked against
+# a shared FFmpeg 8.x dev build (see .cargo/config.toml). Enabled by the `libav-preview` feature.
+rsmpeg = { version = "0.18", default-features = false, features = ["ffmpeg8"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

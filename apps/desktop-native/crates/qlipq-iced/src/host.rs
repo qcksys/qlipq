@@ -243,12 +243,15 @@ fn detect_hdr(probe_json: &str) -> bool {
 fn preview_vf(w: u32, h: u32, is_hdr: bool, fps: Option<f64>) -> String {
     let fps_part = fps.map(|f| format!(",fps={f:.5}")).unwrap_or_default();
     if is_hdr {
-        // zscale resizes + linearizes from the source's HDR transfer, then Mobius tonemaps to SDR
-        // and converts back to full-range BT.709; `-pix_fmt rgba` does the final 8-bit conversion.
-        // Mobius (vs Hable) keeps midtones up — Hable crushed shadows and looked too dark.
+        // zscale resizes + linearizes from the source's HDR transfer, Hable tonemaps to SDR (clean
+        // highlight rolloff), then back to full-range BT.709; a small `eq` gamma lift restores
+        // midtones (Hable alone reads too dark; Mobius alone too bright). `-pix_fmt rgba` finishes.
+        // NOTE: this is an interim fixed-operator approximation. VLC-quality HDR (libplacebo with
+        // dynamic peak detection) is too slow to spawn per-frame and will come via the in-process
+        // rsmpeg + libplacebo preview path.
         format!(
             "zscale=w={w}:h={h}:t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,\
-             tonemap=tonemap=mobius,zscale=t=bt709:m=bt709:r=pc{fps_part}"
+             tonemap=tonemap=hable:desat=2,zscale=t=bt709:m=bt709:r=pc,eq=gamma=1.3{fps_part}"
         )
     } else {
         format!("scale={w}:{h}{fps_part}")
