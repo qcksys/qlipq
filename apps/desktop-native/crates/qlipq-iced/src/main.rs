@@ -9,13 +9,14 @@
 
 mod host;
 mod iso;
+mod video;
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iced::widget::{
-    button, checkbox, column, container, image, pick_list, progress_bar, row, scrollable, slider,
+    button, checkbox, column, container, pick_list, progress_bar, row, scrollable, shader, slider,
     text, text_input, Space,
 };
 use iced::{Element, Length, Subscription, Task, Theme};
@@ -140,10 +141,14 @@ struct Editor {
     crop: CropSpec,
     audio: Vec<AudioRow>,
     current_time: f64,
-    frame: Option<image::Handle>,
+    /// Latest decoded preview frame, shared with the `video` shader widget (persistent GPU texture).
+    shared_frame: video::SharedFrame,
+    has_frame: bool,
     frame_dirty: bool,
     extracting: bool,
     playing: bool,
+    /// Warm streaming decoder, present only while playing (dropped → ffmpeg killed).
+    player: Option<host::Player>,
     exporting: bool,
     progress: Arc<Mutex<f32>>,
     progress_display: f32,
@@ -179,6 +184,7 @@ struct App {
 #[derive(Debug, Clone)]
 enum Message {
     Tick,
+    PlaybackTick,
     ShowQueue,
     ShowSettings,
     OpenRepo,
@@ -300,7 +306,15 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        iced::time::every(TICK).map(|_| Message::Tick)
+        let base = iced::time::every(TICK).map(|_| Message::Tick);
+        // While playing, add a fast tick at the preview frame rate to pull streamed frames.
+        match self.editor.as_ref().filter(|e| e.playing).and_then(|e| e.player.as_ref()) {
+            Some(player) => {
+                let dt = Duration::from_secs_f64(1.0 / player.fps().clamp(1.0, 60.0));
+                Subscription::batch([base, iced::time::every(dt).map(|_| Message::PlaybackTick)])
+            }
+            None => base,
+        }
     }
 
     fn theme(&self) -> Theme {
@@ -420,6 +434,7 @@ impl App {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Tick => return self.on_tick(),
+            Message::PlaybackTick => self.on_playback_tick(),
             Message::ShowQueue => self.view = View::Queue,
             Message::ShowSettings => self.view = View::Settings,
             Message::OpenRepo => host::open_external("https://github.com/qcksys/qlipq"),
@@ -449,33 +464,57 @@ impl App {
                 self.presets = host::CapturePresets { obs, nvidia_share: nvidia };
             }
             Message::SelectItem(id) => return self.select_item(id),
-            Message::MediaProbed(id, result) => self.on_media_probed(id, result),
+            Message::MediaProbed(id, result) => {
+                self.on_media_probed(id, result);
+                return self.request_frame();
+            }
             Message::FrameExtracted(id, frame) => {
+                let mut redo = false;
                 if let Some(ed) = &mut self.editor {
                     if ed.item_id == id {
                         ed.extracting = false;
                         if let Some((w, h, rgba)) = frame {
-                            ed.frame = Some(image::Handle::from_rgba(w, h, rgba));
+                            video::push_frame(&ed.shared_frame, w, h, rgba);
+                            ed.has_frame = true;
                         }
+                        redo = ed.frame_dirty; // position moved again while extracting
                     }
+                }
+                if redo {
+                    return self.request_frame();
                 }
             }
             Message::Seek(sec) => {
+                // Grabbing the scrubber pauses playback (standard editor behaviour).
                 if let Some(ed) = &mut self.editor {
                     ed.current_time = sec;
-                    ed.frame_dirty = true;
+                    ed.playing = false;
+                    ed.player = None;
                 }
+                return self.request_frame();
             }
             Message::Skip(delta) => {
+                let playing = self.editor.as_ref().map(|e| e.playing).unwrap_or(false);
                 if let Some(ed) = &mut self.editor {
                     let max = ed.media.as_ref().map(|m| m.duration_sec).unwrap_or(0.0);
                     ed.current_time = (ed.current_time + delta).clamp(0.0, max);
-                    ed.frame_dirty = true;
+                }
+                if playing {
+                    return self.play_from_current(); // re-seek the warm decoder to the new position
+                } else {
+                    return self.request_frame();
                 }
             }
             Message::TogglePlay => {
-                if let Some(ed) = &mut self.editor {
-                    ed.playing = !ed.playing;
+                let playing = self.editor.as_ref().map(|e| e.playing).unwrap_or(false);
+                if playing {
+                    if let Some(ed) = &mut self.editor {
+                        ed.playing = false;
+                        ed.player = None;
+                    }
+                    return self.request_frame(); // crisp, exact frame at the pause point
+                } else {
+                    return self.play_from_current();
                 }
             }
             Message::SetIn => {
@@ -737,38 +776,100 @@ impl App {
                 tasks.push(self.add_paths(new));
             }
         }
-        // Advance playback and refresh the preview frame.
-        let mut extract: Option<(String, String, String, f64)> = None; // id, path, ffmpeg, time
+        // Mirror export progress for the bar.
         if let Some(ed) = &mut self.editor {
             if ed.exporting {
                 if let Ok(p) = ed.progress.lock() {
                     ed.progress_display = *p;
                 }
             }
-            if ed.playing {
-                if let Some(m) = &ed.media {
-                    ed.current_time = (ed.current_time + TICK.as_secs_f64()).min(m.duration_sec);
-                    ed.frame_dirty = true;
-                    if ed.current_time >= m.duration_sec {
-                        ed.playing = false;
-                    }
-                }
-            }
-            if ed.frame_dirty && !ed.extracting && ed.media.is_some() {
-                ed.frame_dirty = false;
-                ed.extracting = true;
-                if let Some(item) = self.items.iter().find(|i| i.id == ed.item_id) {
-                    extract = Some((ed.item_id.clone(), item.path.clone(), self.config.ffmpeg_path.clone(), ed.current_time));
-                }
-            }
-        }
-        if let Some((id, path, ffmpeg, time)) = extract {
-            tasks.push(Task::perform(
-                blocking(move || host::extract_frame(&path, &ffmpeg, time).ok()),
-                move |frame| Message::FrameExtracted(id.clone(), frame),
-            ));
         }
         Task::batch(tasks)
+    }
+
+    /// Pull one streamed frame from the warm decoder per playback tick (real-time pacing comes
+    /// from the channel backpressure: the decoder produces at roughly the rate we consume).
+    fn on_playback_tick(&mut self) {
+        let Some(ed) = &mut self.editor else { return };
+        let polled = ed.player.as_ref().map(|p| (p.poll(), p.dimensions(), p.fps()));
+        let Some((frame, (w, h), fps)) = polled else { return };
+        match frame {
+            host::FramePoll::Frame(bytes) => {
+                video::push_frame(&ed.shared_frame, w, h, bytes);
+                ed.has_frame = true;
+                // Advance the playhead by one frame. End-of-clip is signalled authoritatively by
+                // `Ended` (ffmpeg closing the pipe at real EOF) — don't terminate on the probed
+                // duration, which may be 0/unknown or slightly short. The scrubber clamps display.
+                ed.current_time += 1.0 / fps;
+            }
+            host::FramePoll::Empty => {}
+            host::FramePoll::Ended => {
+                if let Some(dur) = ed.media.as_ref().map(|m| m.duration_sec).filter(|d| *d > 0.0) {
+                    ed.current_time = dur;
+                }
+                ed.playing = false;
+                ed.player = None;
+            }
+        }
+    }
+
+    /// Extract a single preview frame at the playhead (scrubbing / paused). Coalesces: if an
+    /// extraction is already in flight, just mark the frame dirty and re-request on completion.
+    fn request_frame(&mut self) -> Task<Message> {
+        let snap = match self.editor.as_ref() {
+            Some(ed) if !ed.playing && ed.media.is_some() => {
+                let m = ed.media.as_ref().unwrap();
+                Some((ed.extracting, ed.current_time, ed.item_id.clone(), m.width, m.height))
+            }
+            _ => None,
+        };
+        let Some((extracting, sec, id, mw, mh)) = snap else { return Task::none() };
+        if extracting {
+            if let Some(ed) = &mut self.editor {
+                ed.frame_dirty = true;
+            }
+            return Task::none();
+        }
+        let Some(path) = self.items.iter().find(|i| i.id == id).map(|i| i.path.clone()) else {
+            return Task::none();
+        };
+        let ffmpeg = self.config.ffmpeg_path.clone();
+        if let Some(ed) = &mut self.editor {
+            ed.extracting = true;
+            ed.frame_dirty = false;
+        }
+        Task::perform(
+            blocking(move || host::extract_frame(&path, &ffmpeg, sec, mw, mh).ok()),
+            move |frame| Message::FrameExtracted(id.clone(), frame),
+        )
+    }
+
+    /// (Re)start the warm streaming decoder from the current playhead and enter the playing state.
+    /// Returns a fallback single-frame task if the decoder can't be started (e.g. bad ffmpeg path).
+    fn play_from_current(&mut self) -> Task<Message> {
+        let snap = match self.editor.as_ref() {
+            Some(ed) if ed.media.is_some() => {
+                let m = ed.media.as_ref().unwrap();
+                Some((ed.item_id.clone(), ed.current_time, m.width, m.height, m.fps, m.duration_sec))
+            }
+            _ => None,
+        };
+        let Some((id, cur, mw, mh, mfps, dur)) = snap else { return Task::none() };
+        // Restart from the top only when we know we're at the real end (avoid rewinding on a 0/unknown duration).
+        let start = if dur > 0.0 && cur >= dur { 0.0 } else { cur };
+        let Some(path) = self.items.iter().find(|i| i.id == id).map(|i| i.path.clone()) else {
+            return Task::none();
+        };
+        let ffmpeg = self.config.ffmpeg_path.clone();
+        let player = host::start_player(&path, &ffmpeg, start, mw, mh, mfps);
+        let started = player.is_some();
+        if let Some(ed) = &mut self.editor {
+            ed.current_time = start;
+            ed.playing = started;
+            ed.player = player;
+            ed.frame_dirty = false;
+        }
+        if started { Task::none() } else { self.request_frame() }
     }
 
     fn select_item(&mut self, id: String) -> Task<Message> {
@@ -786,10 +887,12 @@ impl App {
             crop: CropSpec { x: 0, y: 0, width: 0, height: 0 },
             audio: Vec::new(),
             current_time: 0.0,
-            frame: None,
+            shared_frame: video::new_shared_frame(),
+            has_frame: false,
             frame_dirty: false,
             extracting: false,
             playing: false,
+            player: None,
             exporting: false,
             progress: Arc::new(Mutex::new(0.0)),
             progress_display: 0.0,
@@ -925,6 +1028,9 @@ impl App {
             ed.exporting = true;
             ed.progress_display = 0.0;
             ed.progress = Arc::clone(&progress);
+            // Stop the preview decoder so it doesn't contend with the export for CPU.
+            ed.playing = false;
+            ed.player = None;
         }
         if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
             item.status = QueueStatus::Exporting;

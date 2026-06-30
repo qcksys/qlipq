@@ -5,7 +5,8 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
@@ -207,35 +208,137 @@ pub fn probe(path: &str, ffprobe_path: &str) -> Result<MediaInfo, String> {
     Ok(parse_ffprobe(&String::from_utf8_lossy(&output.stdout)))
 }
 
-/// Extract a single frame at `sec` (scaled to ≤720p) as RGBA bytes for the preview.
-pub fn extract_frame(path: &str, ffmpeg_path: &str, sec: f64) -> Result<(u32, u32, Vec<u8>), String> {
+/// Preview output dimensions: scaled to ≤720 tall (never upscaled), preserving aspect.
+/// Both dimensions are fixed explicitly so raw RGBA frames have an exactly known byte count.
+pub fn preview_dims(src_w: i64, src_h: i64) -> (u32, u32) {
+    let src_w = src_w.max(2) as f64;
+    let src_h = src_h.max(2) as f64;
+    let out_h = src_h.min(720.0);
+    let out_w = (src_w * out_h / src_h).round().max(2.0);
+    (out_w as u32, out_h as u32)
+}
+
+/// Extract a single frame at `sec` as raw RGBA bytes for the preview (scrubbing / paused).
+/// Outputs `rawvideo` — no PNG encode/decode round-trip — at a fixed, pre-computed size.
+pub fn extract_frame(
+    path: &str,
+    ffmpeg_path: &str,
+    sec: f64,
+    src_w: i64,
+    src_h: i64,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let (w, h) = preview_dims(src_w, src_h);
     let sec_arg = format!("{:.3}", sec.max(0.0));
-    let output = hidden_command(ffmpeg_path)
+    let vf = format!("scale={w}:{h}");
+    let mut output = hidden_command(ffmpeg_path)
         .args([
-            "-ss",
-            &sec_arg,
-            "-i",
-            path,
-            "-frames:v",
-            "1",
-            "-vf",
-            "scale=-2:720",
-            "-f",
-            "image2pipe",
-            "-vcodec",
-            "png",
-            "pipe:1",
+            "-hide_banner", "-loglevel", "error", "-ss", &sec_arg, "-i", path, "-frames:v", "1",
+            "-an", "-vf", &vf, "-pix_fmt", "rgba", "-f", "rawvideo", "pipe:1",
         ])
         .stderr(Stdio::null())
         .output()
         .map_err(|e| format!("Failed to run ffmpeg ({ffmpeg_path}): {e}"))?;
-    if !output.status.success() || output.stdout.is_empty() {
+    let expected = (w as usize) * (h as usize) * 4;
+    if !output.status.success() || output.stdout.len() < expected {
         return Err("frame extraction failed".to_string());
     }
-    let img = image::load_from_memory(&output.stdout).map_err(|e| e.to_string())?;
-    let rgba = img.to_rgba8();
-    let (w, h) = (rgba.width(), rgba.height());
-    Ok((w, h, rgba.into_raw()))
+    output.stdout.truncate(expected);
+    Ok((w, h, output.stdout))
+}
+
+/// Result of polling a [`Player`] for the next decoded frame.
+pub enum FramePoll {
+    /// A frame is ready (raw RGBA, `width * height * 4` bytes).
+    Frame(Vec<u8>),
+    /// No frame ready yet (decoder still working).
+    Empty,
+    /// The decoder finished or died — playback should stop.
+    Ended,
+}
+
+/// A persistent ffmpeg decoder that streams sequential RGBA frames for smooth playback.
+///
+/// One process is kept warm (input opened, decoder state retained) instead of re-spawning ffmpeg
+/// per frame, so sequential playback avoids the per-frame spawn + container-open + seek cost. A
+/// reader thread pushes frames into a small bounded channel; the full pipe applies backpressure so
+/// ffmpeg decodes at roughly the consumption rate rather than buffering the whole clip in memory.
+pub struct Player {
+    child: Child,
+    rx: Receiver<Vec<u8>>,
+    width: u32,
+    height: u32,
+    fps: f64,
+}
+
+impl Player {
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    pub fn fps(&self) -> f64 {
+        self.fps
+    }
+
+    /// Non-blocking: take the next decoded frame if one is ready.
+    pub fn poll(&self) -> FramePoll {
+        match self.rx.try_recv() {
+            Ok(frame) => FramePoll::Frame(frame),
+            Err(TryRecvError::Empty) => FramePoll::Empty,
+            Err(TryRecvError::Disconnected) => FramePoll::Ended,
+        }
+    }
+}
+
+impl Drop for Player {
+    fn drop(&mut self) {
+        // Kill the decoder; the reader thread then hits EOF (or the dropped receiver) and exits.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Start a streaming decoder from `start_sec`, emitting frames at ≤30fps (downsampled from source).
+pub fn start_player(
+    path: &str,
+    ffmpeg_path: &str,
+    start_sec: f64,
+    src_w: i64,
+    src_h: i64,
+    src_fps: f64,
+) -> Option<Player> {
+    let (w, h) = preview_dims(src_w, src_h);
+    let fps = if src_fps.is_finite() && src_fps > 0.0 { src_fps.min(30.0) } else { 30.0 };
+    let start = format!("{:.3}", start_sec.max(0.0));
+    let vf = format!("scale={w}:{h},fps={fps:.5}");
+
+    let mut child = hidden_command(ffmpeg_path)
+        .args([
+            "-hide_banner", "-loglevel", "error", "-ss", &start, "-i", path, "-an", "-vf", &vf,
+            "-pix_fmt", "rgba", "-f", "rawvideo", "pipe:1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let stdout = child.stdout.take()?;
+    let frame_bytes = (w as usize) * (h as usize) * 4;
+    // Small buffer: enough to smooth jitter, small enough that backpressure paces the decoder.
+    let (tx, rx) = sync_channel::<Vec<u8>>(3);
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut buf = vec![0u8; frame_bytes];
+            if reader.read_exact(&mut buf).is_err() {
+                break; // EOF or the process was killed
+            }
+            if tx.send(buf).is_err() {
+                break; // the Player (and its receiver) was dropped
+            }
+        }
+    });
+
+    Some(Player { child, rx, width: w, height: h, fps })
 }
 
 /// Run ffmpeg to export, streaming `-progress` into `progress` (0..1). On failure returns

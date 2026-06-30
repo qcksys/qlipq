@@ -109,10 +109,21 @@ impl App {
             return container(text("…")).into();
         };
 
-        // Preview frame.
-        let preview: Element<Message> = match &ed.frame {
-            Some(h) => image(h.clone()).width(Length::Fill).height(Length::Fixed(360.0)).into(),
-            None => container(text("Preparing preview…")).center_x(Length::Fill).height(Length::Fixed(360.0)).into(),
+        // Preview frame — rendered via a custom `shader` widget backed by a persistent wgpu
+        // texture (avoids the per-frame `image::Handle` atlas churn that caused flicker). Sized to
+        // the source aspect ratio so the fit-to-bounds shader draw doesn't distort.
+        let preview: Element<Message> = if ed.has_frame {
+            let aspect = if media.height > 0 { media.width as f32 / media.height as f32 } else { 16.0 / 9.0 };
+            container(
+                shader(video::VideoProgram::new(ed.shared_frame.clone()))
+                    .width(Length::Fixed(360.0 * aspect))
+                    .height(Length::Fixed(360.0)),
+            )
+            .center_x(Length::Fill)
+            .height(Length::Fixed(360.0))
+            .into()
+        } else {
+            container(text("Preparing preview…")).center_x(Length::Fill).height(Length::Fixed(360.0)).into()
         };
 
         // Transport.
