@@ -1,0 +1,27 @@
+[package]
+name = "qlipq-iced"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "qlipq"
+path = "src/main.rs"
+
+[dependencies]
+qlipq-core = { workspace = true }
+qlipq-ffmpeg = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+iced = { version = "0.14", features = ["tokio", "image"] }
+tokio = { version = "1", features = ["rt", "time"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+notify = "8.2"
+dirs = "6"
+rfd = "0.17"
+open = "5"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"

@@ -34,6 +34,11 @@ Tauri desktop app, an Astro website, and two shared TS packages.
 > (LibVLC plays MKV/HEVC natively). The Tauri app under `apps/app` is **superseded**
 > and should be removed once the WinUI app is validated on a real machine. Until
 > then both exist; the sections below describe the original Tauri app.
+>
+> A **cross-platform** variant lives in **`iced/`** (a Cargo workspace; Windows/macOS/Linux,
+> Rust + [iced](https://iced.rs) — see [iced/README.md](iced/README.md)). It has its own Rust
+> ports of `qlipq-core`/`qlipq-ffmpeg` with ported parity tests, and previews via ffmpeg
+> frame extraction (no libav linking). Both native rewrites share `~/.com.qcksys.qlipq` config/edits.
 
 ## Architecture (the parts that span files)
 

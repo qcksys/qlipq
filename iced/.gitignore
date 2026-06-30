@@ -1,0 +1,8 @@
+# Rust / Cargo build output
+/target
+
+# Backup files from `cargo fmt` / rustfmt
+**/*.rs.bk
+
+# MSVC debug info
+*.pdb
