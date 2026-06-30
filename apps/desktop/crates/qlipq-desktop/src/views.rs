@@ -94,7 +94,7 @@ impl App {
             .spacing(theme::XS),
         )
         .width(Length::Fill)
-        .padding(theme::SM)
+        .padding([theme::XS, 0.0])
         .style(theme::btn_ghost)
         .on_press(Message::SelectItem(item.id.clone()));
 
@@ -205,16 +205,13 @@ impl App {
         .align_y(iced::Alignment::Center);
         let timeline = column![scrub, time_row, inout_row].spacing(theme::SM);
 
-        // Crop + audio.
-        let panels = row![
-            container(self.crop_section(ed, media)).width(Length::Fill),
-            container(self.audio_section(ed)).width(Length::Fill),
+        // Options laid out in two columns: media edits (crop, audio) on the left, output + metadata
+        // (quality override, tags) on the right. The two toggle cards (Crop, Override) head each column.
+        let options = row![
+            column![self.crop_section(ed, media), self.audio_section(ed)].spacing(theme::MD).width(Length::Fill),
+            column![self.override_section(item), self.editor_tags(item)].spacing(theme::MD).width(Length::Fill),
         ]
         .spacing(theme::MD);
-
-        // Quality override + tags.
-        let override_section = self.override_section(item);
-        let tags = self.editor_tags(item);
 
         // Export bar.
         let spec = editor_spec(ed);
@@ -264,10 +261,9 @@ impl App {
         export_bar = export_bar.push(export_el);
 
         let player_zone = column![preview, transport, timeline].spacing(theme::MD);
-        let settings_zone = column![panels, override_section, tags].spacing(theme::MD);
 
         scrollable(
-            column![player_zone, rule::horizontal(1), settings_zone, rule::horizontal(1), export_bar]
+            column![player_zone, rule::horizontal(1), options, rule::horizontal(1), export_bar]
                 .spacing(theme::LG)
                 .padding(theme::LG),
         )
@@ -295,7 +291,7 @@ impl App {
                 .spacing(theme::SM),
             );
         }
-        container(col).padding(theme::MD).style(theme::card).into()
+        container(col).width(Length::Fill).padding(theme::MD).style(theme::card).into()
     }
 
     fn audio_section<'a>(&self, ed: &'a Editor) -> Element<'a, Message> {
@@ -324,7 +320,7 @@ impl App {
                 .spacing(theme::XS),
             );
         }
-        container(col).padding(theme::MD).style(theme::card).into()
+        container(col).width(Length::Fill).padding(theme::MD).style(theme::card).into()
     }
 
     fn override_section(&self, item: &QueueItem) -> Element<'_, Message> {
@@ -349,7 +345,7 @@ impl App {
             }
             col = col.push(fields);
         }
-        container(col).padding(theme::MD).style(theme::card).into()
+        container(col).width(Length::Fill).padding(theme::MD).style(theme::card).into()
     }
 
     fn editor_tags(&self, item: &QueueItem) -> Element<'_, Message> {
@@ -367,6 +363,7 @@ impl App {
             row![tags_row, input].spacing(theme::SM).align_y(iced::Alignment::Center),
         ]
         .spacing(theme::SM))
+        .width(Length::Fill)
         .padding(theme::MD)
         .style(theme::card)
         .into()

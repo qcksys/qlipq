@@ -883,7 +883,10 @@ fn build_audio_out(device: &cpal::Device, played: Arc<AtomicU64>) -> Option<Audi
         return None;
     }
     let config = supported.config();
-    let cap = (out_rate as usize * out_ch / 2).max(out_ch * 2048); // ~0.5 s of audio
+    // ~2 s of audio. Audio decode is cheap but the audio thread competes for CPU with continuous
+    // 1440p video decode + libplacebo; a deep ring lets it build a lead during light moments and
+    // coast through heavy-decode bursts without the cpal callback hitting silence (dropouts).
+    let cap = (out_rate as usize * out_ch * 2).max(out_ch * 2048);
     let (producer, mut consumer) = HeapRb::<f32>::new(cap).split();
     let played_cb = Arc::clone(&played);
     let stream = device
@@ -995,11 +998,15 @@ fn build_video_filter<'g>(
     let outputs = AVFilterInOut::new(c"in", &mut src, 0);
     let inputs = AVFilterInOut::new(c"out", &mut sink, 0);
     let descr = if is_hdr {
-        // HDR→BT.709 SDR tonemap (full-range RGB out for the GPU upload). `brightness` (-1..1) is a
-        // small midtone lift — libplacebo's dynamic tonemap reads a touch dark for game capture, the
-        // same reason the CLI path applies `eq=gamma=1.3`. Tune it (or add `contrast`, default 1) here.
+        // HDR→BT.709 SDR tonemap (full-range RGB out for the GPU upload), then an `eq=gamma` midtone
+        // lift. Windows HDR *desktop* capture pins SDR-content white at the Windows "SDR content
+        // brightness" level (often well above the 203-nit reference) inside the PQ container, so
+        // libplacebo maps that down to its 203-nit SDR target and the UI reads ~half brightness. The
+        // ffmpeg libplacebo wrapper exposes no source/target-peak knob, so we compensate with gamma
+        // (>1 brightens, preserves true black — same lever as the CLI path's `eq=gamma=1.3`). Tune
+        // `gamma` to taste here (1.4 gentler … 2.0 stronger).
         CString::new(format!(
-            "libplacebo=w={w}:h={h}:tonemapping=auto:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=pc:brightness=0.07,format=rgba"
+            "libplacebo=w={w}:h={h}:tonemapping=auto:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=pc,eq=gamma=1.8,format=rgba"
         ))
     } else {
         CString::new(format!("scale={w}:{h}:flags=bilinear,format=rgba"))
