@@ -17,7 +17,7 @@
 
 use std::collections::VecDeque;
 use std::ffi::{CStr, CString};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -41,13 +41,29 @@ pub use crate::host::FramePoll;
 
 /// How many decoded video frames the video thread may run ahead before it blocks. Presentation
 /// drains the queue at the master-clock rate, so this caps lookahead (≈0.3 s) and paces decoding.
-const VIDEO_LOOKAHEAD: usize = 12;
+pub const VIDEO_LOOKAHEAD: usize = 12;
+
+/// Live playback health counters, shared between the decode/audio threads (writers) and the UI
+/// (reader), so the editor's debug panel can surface *why* a preview stutters. A starving video
+/// queue means decode can't keep realtime; audio underruns are the audible dropouts that follow.
+#[derive(Default)]
+pub struct PlayerStats {
+    /// Decoded frames dropped in [`Player::poll`] because presentation fell behind the master clock.
+    pub dropped_frames: AtomicU64,
+    /// Samples-per-channel the cpal callback had to zero-fill because the ring ran dry (→ dropouts).
+    pub audio_underruns: AtomicU64,
+    /// Audio ring occupancy as a fraction ×1000 (0..=1000), sampled by the cpal callback.
+    pub audio_fill_permille: AtomicU32,
+    /// Current decoded-video queue depth (0..=[`VIDEO_LOOKAHEAD`]); low/zero = decode-starved.
+    pub video_queue: AtomicUsize,
+}
 
 /// Probe a media file **in process** (libav), returning its [`MediaInfo`] and whether the video
 /// stream is HDR (PQ/HLG). This replaces the old `ffprobe` shell-out so the app needs no external
 /// binary: it opens the container, reads codec parameters off the streams, and reports the same
 /// fields the editor/queue consume. Audio-relative `index` matches ffmpeg's `0:a:N` selector.
 pub fn probe(path: &str) -> Result<(MediaInfo, bool), String> {
+    let _log = crate::log_ctx::enter(path);
     let cpath = CString::new(path).map_err(|e| e.to_string())?;
     let input = AVFormatContextInput::open(&cpath).map_err(|e| format!("Failed to open {path}: {e}"))?;
 
@@ -172,6 +188,9 @@ struct Shared {
     /// Pixel format the filter buffer source must declare — the post-transfer NV12/P010 when the
     /// decoder is hardware-accelerated, else the decoder's native format. Set once at `start_player`.
     video_pix_fmt: i32,
+    /// Live playback health counters (written by the decode/audio threads, read by the UI). An
+    /// `Arc` so the cpal callback can hold its own clone to record underruns without the whole `Shared`.
+    stats: Arc<PlayerStats>,
 }
 
 enum Command {
@@ -216,6 +235,31 @@ impl Player {
         Some(self.shared.clock.now())
     }
 
+    /// True while the master clock is audio-driven (has decodable enabled audio); false = wall clock.
+    pub fn audio_clock(&self) -> bool {
+        self.shared.clock.use_audio.load(Ordering::Relaxed)
+    }
+
+    /// Decoded-video queue depth now (0..=[`VIDEO_LOOKAHEAD`]). Persistently low = decode-starved.
+    pub fn queue_depth(&self) -> usize {
+        self.shared.stats.video_queue.load(Ordering::Relaxed)
+    }
+
+    /// Cumulative video frames dropped for lateness since playback (re)started.
+    pub fn dropped_frames(&self) -> u64 {
+        self.shared.stats.dropped_frames.load(Ordering::Relaxed)
+    }
+
+    /// Cumulative audio-ring underruns (zero-filled samples-per-channel) — the audible dropouts.
+    pub fn audio_underruns(&self) -> u64 {
+        self.shared.stats.audio_underruns.load(Ordering::Relaxed)
+    }
+
+    /// Audio ring occupancy as a 0.0..=1.0 fraction (last sampled by the cpal callback).
+    pub fn audio_fill(&self) -> f32 {
+        self.shared.stats.audio_fill_permille.load(Ordering::Relaxed) as f32 / 1000.0
+    }
+
     /// Non-blocking: present the newest video frame that is due at the current clock, dropping any
     /// earlier frames we fell behind on. Returns [`FramePoll::Ended`] once the decoder is done and
     /// the queue has drained.
@@ -223,15 +267,22 @@ impl Player {
         let clock = self.shared.clock.now();
         let mut q = self.shared.video.lock().unwrap();
         let mut chosen = None;
+        let mut popped = 0u64;
         while let Some((pts, _)) = q.front() {
             if *pts <= clock + 1e-3 {
                 chosen = q.pop_front().map(|(_, rgba)| rgba);
+                popped += 1;
             } else {
                 break;
             }
         }
         let empty = q.is_empty();
+        self.shared.stats.video_queue.store(q.len(), Ordering::Relaxed);
         drop(q);
+        // Every frame past the one we present was decoded but arrived too late — count it as dropped.
+        if popped > 1 {
+            self.shared.stats.dropped_frames.fetch_add(popped - 1, Ordering::Relaxed);
+        }
         match chosen {
             Some(rgba) => FramePoll::Frame(rgba),
             None if empty && self.shared.ended.load(Ordering::Relaxed) => FramePoll::Ended,
@@ -289,11 +340,14 @@ pub fn start_player(
     audio_tracks: Vec<(i64, f64)>,
     gamma: f64,
 ) -> Option<Player> {
+    let _log = crate::log_ctx::enter(path);
     let cpath = CString::new(path).ok()?;
     let input = AVFormatContextInput::open(&cpath).ok()?;
 
     let vid_idx = input.find_best_stream(ffi::AVMEDIA_TYPE_VIDEO).ok()?.map(|(i, _)| i)?;
-    let (vdec, tb_v, sar, video_pix_fmt) = build_video_decoder(&input, vid_idx)?;
+    // The scrubber (always open for the clip) reports the decode path to the debug panel, so the
+    // streaming player doesn't need its own copy — just the buffersrc pixel format.
+    let (vdec, tb_v, sar, video_pix_fmt, _hw_decode) = build_video_decoder(&input, vid_idx)?;
     // Preview audio is a monitor mixdown of the *enabled* tracks (per-track gain), so "has audio"
     // means the file has audio AND at least one track is enabled — disabling them all plays silence
     // (video then runs on the wall clock).
@@ -308,6 +362,7 @@ pub fn start_player(
         ended: AtomicBool::new(false),
         gamma,
         video_pix_fmt,
+        stats: Arc::new(PlayerStats::default()),
         clock: Clock {
             use_audio: AtomicBool::new(has_audio),
             base: Mutex::new(start_sec),
@@ -320,8 +375,9 @@ pub fn start_player(
     let (video_cmd, video_rx) = channel::<Command>();
     let shared_v = Arc::clone(&shared);
     let vid_idx = vid_idx as i32;
+    let v_path = path.to_string();
     let video_thread = std::thread::spawn(move || {
-        video_loop(input, vdec, vid_idx, tb_v, sar, dims, is_hdr, !has_audio, start_sec, shared_v, video_rx);
+        video_loop(v_path, input, vdec, vid_idx, tb_v, sar, dims, is_hdr, !has_audio, start_sec, shared_v, video_rx);
     });
 
     // Per-track gains live in shared atomics so the UI can adjust them mid-playback (see `set_gain`).
@@ -383,20 +439,25 @@ pub struct ScrubDecoder {
     gamma: f64,
     /// Buffer-source pixel format (NV12/P010 if hardware-decoded, else native). See `build_video_decoder`.
     pix_fmt: i32,
+    /// True if this clip decodes on the GPU (D3D11VA). Surfaced in the debug panel while paused.
+    hw_decode: bool,
     /// Warm filter graph, built lazily on the first `frame_at` and reused for every scrub.
     graph: Option<AVFilterGraph>,
     /// Monotonic PTS handed to buffersrc so reused-graph pushes never look like backward time.
     mono_pts: i64,
+    /// Source path, so libav decode errors during a scrub name the clip (see `crate::log_ctx`).
+    path: String,
 }
 
 impl ScrubDecoder {
     /// Open the file and build the video decoder once (the filter graph is built lazily on first use).
     /// `None` if the file/decoder can't open.
     pub fn open(path: &str, src_w: i64, src_h: i64, is_hdr: bool, gamma: f64) -> Option<Self> {
+        let _log = crate::log_ctx::enter(path);
         let cpath = CString::new(path).ok()?;
         let input = AVFormatContextInput::open(&cpath).ok()?;
         let vid_idx = input.find_best_stream(ffi::AVMEDIA_TYPE_VIDEO).ok()?.map(|(i, _)| i)?;
-        let (vdec, tb_v, sar, pix_fmt) = build_video_decoder(&input, vid_idx)?;
+        let (vdec, tb_v, sar, pix_fmt, hw_decode) = build_video_decoder(&input, vid_idx)?;
         Some(Self {
             input,
             vdec,
@@ -407,15 +468,28 @@ impl ScrubDecoder {
             is_hdr,
             gamma,
             pix_fmt,
+            hw_decode,
             graph: None,
             mono_pts: 0,
+            path: path.to_owned(),
         })
+    }
+
+    /// GPU (D3D11VA) decode vs software decode for this clip. Static per clip; drives the debug panel.
+    pub fn hw_decode(&self) -> bool {
+        self.hw_decode
+    }
+
+    /// The preview output size (≤720 tall, aspect-preserved) this decoder renders frames at.
+    pub fn preview_dims(&self) -> (u32, u32) {
+        self.dims
     }
 
     /// Decode the frame at `sec` as tight RGBA, returning `(w, h, rgba, realized_sec)` where
     /// `realized_sec` is the PTS of the frame actually returned (≈ `sec`, within one frame) so the
     /// caller can snap the playhead to the real frame (frame-accurate scrubber). `None` on decode end.
     pub fn frame_at(&mut self, sec: f64) -> Option<(u32, u32, Vec<u8>, f64)> {
+        let _log = crate::log_ctx::enter(&self.path);
         let target = sec.max(0.0);
         let (w, h) = self.dims;
         let tb_v_secs = rational_secs(self.tb_v);
@@ -541,6 +615,7 @@ fn filter_target_frame(
 
 #[allow(clippy::too_many_arguments)]
 fn video_loop(
+    path: String,
     mut input: AVFormatContextInput,
     mut vdec: AVCodecContext,
     vid_idx: i32,
@@ -553,6 +628,7 @@ fn video_loop(
     shared: Arc<Shared>,
     cmd_rx: Receiver<Command>,
 ) {
+    let _log = crate::log_ctx::enter(&path);
     let mut start = start_sec;
     loop {
         match video_segment(&mut input, &mut vdec, vid_idx, tb_v, sar, dims, is_hdr, manages_clock, start, &shared, &cmd_rx) {
@@ -716,6 +792,7 @@ fn audio_loop(
     cmd_rx: Receiver<Command>,
     audio_tracks: Vec<(i64, Arc<AtomicU32>)>,
 ) {
+    let _log = crate::log_ctx::enter(&path);
     let Ok(cpath) = CString::new(path) else { return };
     let Ok(mut input) = AVFormatContextInput::open(&cpath) else { return };
 
@@ -805,7 +882,7 @@ fn audio_segment(
     // atomic and starts incrementing it as soon as the stream plays, so resetting after would wipe
     // its first samples and stall the clock.
     shared.clock.played.store(0, Ordering::Relaxed);
-    let mut audio = device.and_then(|d| build_audio_out(d, Arc::clone(&shared.clock.played)));
+    let mut audio = device.and_then(|d| build_audio_out(d, Arc::clone(&shared.clock.played), Arc::clone(&shared.stats)));
     let use_audio = audio.is_some();
     let out_ch = audio.as_ref().map(|a| a.out_channels).unwrap_or(0);
     let out_rate = audio.as_ref().map(|a| a.out_rate as i32).unwrap_or(48_000);
@@ -1003,7 +1080,7 @@ struct AudioOut {
 /// it actually plays (silence-filled underruns don't count), which is what advances the master clock
 /// through pre-roll and seeks. Sharing the clock's atomic (rather than a private one) is essential:
 /// otherwise the clock never moves and video freezes while audio plays.
-fn build_audio_out(device: &cpal::Device, played: Arc<AtomicU64>) -> Option<AudioOut> {
+fn build_audio_out(device: &cpal::Device, played: Arc<AtomicU64>, stats: Arc<PlayerStats>) -> Option<AudioOut> {
     let supported = device.default_output_config().ok()?;
     let out_rate = supported.sample_rate();
     let out_ch = supported.channels() as usize;
@@ -1022,10 +1099,17 @@ fn build_audio_out(device: &cpal::Device, played: Arc<AtomicU64>) -> Option<Audi
             config,
             move |data: &mut [f32], _| {
                 let got = consumer.pop_slice(data);
-                for s in data[got..].iter_mut() {
-                    *s = 0.0;
+                // Any samples the ring couldn't supply are zero-filled — an audible dropout. Record
+                // them (per-channel) and the current ring occupancy so the debug panel can show
+                // whether the audio buffer is starving.
+                if got < data.len() {
+                    stats.audio_underruns.fetch_add(((data.len() - got) / out_ch) as u64, Ordering::Relaxed);
+                    for s in data[got..].iter_mut() {
+                        *s = 0.0;
+                    }
                 }
                 played_cb.fetch_add((got / out_ch) as u64, Ordering::Relaxed);
+                stats.audio_fill_permille.store((consumer.occupied_len() * 1000 / cap) as u32, Ordering::Relaxed);
             },
             move |_err| {},
             None,
@@ -1126,7 +1210,7 @@ fn to_sw_frame(frame: AVFrame) -> Option<AVFrame> {
 fn build_video_decoder(
     input: &AVFormatContextInput,
     idx: usize,
-) -> Option<(AVCodecContext, ffi::AVRational, ffi::AVRational, i32)> {
+) -> Option<(AVCodecContext, ffi::AVRational, ffi::AVRational, i32, bool)> {
     let stream = &input.streams()[idx];
     let tb = stream.time_base;
     let par = stream.codecpar();
@@ -1180,13 +1264,17 @@ fn build_video_decoder(
     // heavy 1440p AV1/HEVC runs below realtime and is the usual cause of preview audio stutter — if a
     // clip logs "software" here (e.g. AV1 on a GPU without hw AV1 decode), that's why.
     let codec = codec_name(par.codec_id);
-    if hw_engaged {
-        eprintln!("qlipq: {codec} video → D3D11VA hardware decode");
+    let mode = if hw_engaged {
+        "D3D11VA hardware decode"
     } else {
-        eprintln!("qlipq: {codec} video → software decode (no D3D11VA for this codec/GPU)");
+        "software decode (no D3D11VA for this codec/GPU)"
+    };
+    match crate::log_ctx::current() {
+        Some(file) => eprintln!("qlipq[{file}]: {codec} video → {mode}"),
+        None => eprintln!("qlipq: {codec} video → {mode}"),
     }
     let sar = if sar.num == 0 { ffi::AVRational { num: 1, den: 1 } } else { sar };
-    Some((dec, tb, sar, buffersrc_fmt))
+    Some((dec, tb, sar, buffersrc_fmt, hw_engaged))
 }
 
 fn build_audio_decoder(input: &AVFormatContextInput, idx: usize) -> Option<(AVCodecContext, ffi::AVRational)> {

@@ -14,6 +14,7 @@ mod theme;
 mod video;
 mod libav;
 mod export;
+mod log_ctx;
 
 // The in-process libav preview player (libplacebo HDR tonemap + synced cpal audio), exposing
 // `poll`/`dimensions`/`fps`/`position`/`try_seek` for the editor below.
@@ -47,10 +48,10 @@ static PROBE_SEM: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
 
 fn main() -> iced::Result {
     // Quiet libav's demuxer/filter chatter (e.g. the harmless "UDTA parsing failed retrying raw"
-    // most recorders trigger, logged once per file open) while keeping real errors visible.
-    unsafe {
-        rsmpeg::ffi::av_log_set_level(rsmpeg::ffi::AV_LOG_ERROR as i32);
-    }
+    // most recorders trigger, logged once per file open) while keeping real errors visible — and
+    // prefix each surviving libav line with the file the thread is decoding, so a broken/truncated
+    // recording's demuxer/decoder errors name the clip that caused them (see `log_ctx`).
+    log_ctx::install();
     iced::application(App::new, App::update, App::view)
         .title("QlipQ")
         .subscription(App::subscription)
@@ -188,6 +189,11 @@ struct Editor {
     has_frame: bool,
     /// Source is HDR (PQ/HLG) — the preview must tonemap to SDR.
     is_hdr: bool,
+    /// Decode path for this clip (GPU D3D11VA vs software), captured when the scrubber opens; shown
+    /// in the debug panel even while paused. `None` until the clip is probed / if the decoder fails.
+    decode_hw: Option<bool>,
+    /// Preview output size (≤720 tall) the decoders render at, for the debug panel.
+    preview_dims: Option<(u32, u32)>,
     frame_dirty: bool,
     extracting: bool,
     playing: bool,
@@ -316,6 +322,8 @@ enum Message {
     /// preview and persists.
     SetHdrPreviewGamma(f64),
     ApplyHdrPreviewGamma,
+    ToggleAutoplay(bool),
+    ToggleDebug(bool),
     SetAfter(AfterChoice),
     MoveFolderChanged(String),
     RenamePrefixChanged(String),
@@ -545,7 +553,19 @@ impl App {
             }
             Message::SelectItem(id) => return self.select_item(id),
             Message::MediaProbed(id, result) => {
-                self.on_media_probed(id, result);
+                self.on_media_probed(id.clone(), result);
+                // Only react to a probe that still matches the open editor. Probes run on the
+                // multi-threaded blocking pool and can finish out of order, so a stale probe from a
+                // superseded selection must not restart (or re-extract) whatever clip is open now —
+                // that would tear down and rebuild a clip that is already playing.
+                if self.editor.as_ref().map_or(true, |e| e.item_id != id) {
+                    return Task::none();
+                }
+                // Autoplay the freshly opened clip when enabled; otherwise show a paused first frame.
+                let ready = self.editor.as_ref().map_or(false, |e| e.load_error.is_none() && e.media.is_some());
+                if self.config.autoplay && ready {
+                    return self.play_from_current();
+                }
                 return self.request_frame();
             }
             Message::FrameExtracted(id, frame) => {
@@ -954,6 +974,8 @@ impl App {
                 };
                 return Task::batch([save, refresh]);
             }
+            Message::ToggleAutoplay(on) => { self.config.autoplay = on; return self.save_config_task(); }
+            Message::ToggleDebug(on) => { self.config.debug = on; return self.save_config_task(); }
             Message::SetAfter(c) => { self.config.after_export.action = c.to_core(); return self.save_config_task(); }
             Message::MoveFolderChanged(s) => { self.config.after_export.move_folder = s; return self.save_config_task(); }
             Message::RenamePrefixChanged(s) => { self.config.after_export.rename_prefix = s; return self.save_config_task(); }
@@ -1130,6 +1152,8 @@ impl App {
             shared_frame: video::new_shared_frame(),
             has_frame: false,
             is_hdr: false,
+            decode_hw: None,
+            preview_dims: None,
             frame_dirty: false,
             extracting: false,
             playing: false,
@@ -1197,6 +1221,12 @@ impl App {
                 ed.scrubber = path
                     .and_then(|p| ScrubDecoder::open(&p, mw, mh, is_hdr, gamma))
                     .map(|s| Arc::new(Mutex::new(s)));
+                // Capture the decode path + preview size once (the scrubber isn't driven yet, so the
+                // lock is free) for the debug panel — representative of the streaming player too.
+                if let Some(s) = ed.scrubber.as_ref().and_then(|s| s.lock().ok()) {
+                    ed.decode_hw = Some(s.hw_decode());
+                    ed.preview_dims = Some(s.preview_dims());
+                }
             }
         }
     }

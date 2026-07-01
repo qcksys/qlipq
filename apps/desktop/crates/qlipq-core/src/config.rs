@@ -182,6 +182,11 @@ pub struct AppConfig {
     /// Preview only — exports are unaffected; SDR clips ignore it.
     #[schemars(range(min = 0.1, max = 10.0))]
     pub hdr_preview_gamma: f64,
+    /// Start playback automatically as soon as a clip is selected. Off opens clips paused.
+    pub autoplay: bool,
+    /// Show the editor's debug panel: clip details, the active decoder (hardware vs software), and
+    /// live preview buffer stats to help diagnose playback stutter.
+    pub debug: bool,
     pub after_export: AfterExportSettings,
     pub output: OutputSettings,
     pub keybinds: Keybinds,
@@ -195,6 +200,8 @@ impl Default for AppConfig {
             video_extensions: DEFAULT_VIDEO_EXTENSIONS.iter().map(|s| s.to_string()).collect(),
             naming_template: "{date}_{source}_{name}".into(),
             hdr_preview_gamma: 1.8,
+            autoplay: true,
+            debug: false,
             after_export: AfterExportSettings::default(),
             output: OutputSettings::default(),
             keybinds: Keybinds::default(),

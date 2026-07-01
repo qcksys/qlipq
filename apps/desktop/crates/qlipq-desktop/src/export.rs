@@ -43,6 +43,7 @@ pub fn run_export(
     progress: Arc<Mutex<f32>>,
     cancel: Arc<AtomicBool>,
 ) -> Result<(), String> {
+    let _log = crate::log_ctx::enter(input_path);
     let temp_path = format!("{output_path}.part.mp4");
     // Stream-copy (remux) the video when nothing forces a re-encode (Original quality, no crop /
     // downscale / fps change) — a lossless, fast trim. Audio is still mixed/encoded. Otherwise

@@ -248,12 +248,76 @@ impl App {
 
         let player_zone = column![preview_tools, preview, transport, timeline].spacing(theme::MD);
 
-        scrollable(
-            column![player_zone, rule::horizontal(1), options, rule::horizontal(1), export_bar]
-                .spacing(theme::LG)
-                .padding(theme::LG),
-        )
-        .into()
+        let mut body = column![player_zone, rule::horizontal(1), options, rule::horizontal(1), export_bar]
+            .spacing(theme::LG)
+            .padding(theme::LG);
+        if self.config.debug {
+            body = body.push(rule::horizontal(1));
+            body = body.push(self.debug_section(ed, media, item));
+        }
+        scrollable(body).into()
+    }
+
+    /// Opt-in developer panel (Settings → Playback → *Show debug panel*): the clip's media details,
+    /// the active decoder, and — while playing — live preview buffer stats, so a stuttering preview's
+    /// cause is visible (software decode + a starving video/audio buffer).
+    fn debug_section<'a>(&self, ed: &'a Editor, media: &MediaInfo, item: &'a QueueItem) -> Element<'a, Message> {
+        let container_ext = item.path.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_else(|| "?".into());
+        let bitrate = match (item.file_size_bytes, media.duration_sec) {
+            (Some(b), d) if d > 0.0 => format!("{:.1} Mbps", (b as f64 * 8.0) / d / 1_000_000.0),
+            _ => "—".to_string(),
+        };
+        let decoder = match ed.decode_hw {
+            Some(true) => "D3D11VA (GPU)".to_string(),
+            Some(false) => "software (CPU)".to_string(),
+            None => "—".to_string(),
+        };
+        let preview_res = match ed.preview_dims {
+            Some((w, h)) => format!("{w}×{h} · {}", if ed.is_hdr { "libplacebo HDR→SDR" } else { "scale" }),
+            None => "—".to_string(),
+        };
+
+        let mut rows = column![
+            dbg_row("File", item.file_name.clone()),
+            dbg_row("Container", container_ext),
+            dbg_row("Video", format!("{} · {}×{} · {:.3} fps{}", media.video_codec, media.width, media.height, media.fps, if ed.is_hdr { " · HDR" } else { "" })),
+            dbg_row("Source bitrate", bitrate),
+            dbg_row("Audio tracks", format!("{}", media.audio_streams.len())),
+            dbg_row("Decoder", decoder),
+            dbg_row("Preview", preview_res),
+        ]
+        .spacing(theme::XS);
+
+        // Live playback health (only meaningful while the streaming player is running).
+        if let Some(p) = &ed.player {
+            let clock = if p.audio_clock() { "audio-synced" } else { "wall clock" };
+            let underruns = p.audio_underruns();
+            rows = rows.push(rule::horizontal(1));
+            rows = rows.push(dbg_row("Master clock", clock.to_string()));
+            rows = rows.push(dbg_row("Video buffer", format!("{}/{} frames", p.queue_depth(), libav::VIDEO_LOOKAHEAD)));
+            rows = rows.push(dbg_row("Dropped frames", format!("{}", p.dropped_frames())));
+            if p.audio_clock() {
+                rows = rows.push(dbg_row("Audio buffer", format!("{}% full", (p.audio_fill() * 100.0) as i32)));
+                rows = rows.push(dbg_row("Audio underruns", format!("{underruns}")));
+            }
+        } else {
+            rows = rows.push(dbg_row("Playback", "paused (play for live buffer stats)".to_string()));
+        }
+
+        // The single most common cause of preview stutter — call it out in plain language.
+        if ed.decode_hw == Some(false) {
+            rows = rows.push(
+                text("No hardware decoder for this codec/GPU — software decode may not keep up with heavy 1440p/4K AV1/HEVC, which stutters the preview. Exports are unaffected.")
+                    .size(theme::SMALL)
+                    .style(|t: &Theme| text::Style { color: Some(t.extended_palette().warning.base.color) }),
+            );
+        }
+
+        container(column![text("Debug").size(theme::HEADING).font(theme::FONT_SEMIBOLD), rows].spacing(theme::SM))
+            .width(Length::Fill)
+            .padding(theme::MD)
+            .style(theme::card)
+            .into()
     }
 
     /// The preview expanded to fill the window, with a transport + exit bar pinned to the bottom.
@@ -479,11 +543,30 @@ impl App {
         ]
         .spacing(theme::XS);
 
+        // Playback + developer toggles.
+        let playback = column![
+            checkbox(self.config.autoplay)
+                .label("Play clips automatically when selected")
+                .text_size(theme::LABEL)
+                .style(theme::checkbox_style)
+                .on_toggle(Message::ToggleAutoplay),
+            checkbox(self.config.debug)
+                .label("Show debug panel in the editor")
+                .text_size(theme::LABEL)
+                .style(theme::checkbox_style)
+                .on_toggle(Message::ToggleDebug),
+            text("The debug panel shows the clip's details, the active decoder (hardware vs software), and live preview buffer stats to help diagnose playback stutter.")
+                .size(theme::SMALL)
+                .style(|t| text::Style { color: Some(theme::muted(t)) }),
+        ]
+        .spacing(theme::SM);
+
         let body = column![
             text("Settings").size(theme::DISPLAY).font(theme::FONT_BOLD),
             section("Watched folders", folders.into()),
             section("Output folder", output_folder.into()),
             section("Output defaults", column![quality, encode_row, rate_row].spacing(theme::SM).into()),
+            section("Playback", playback.into()),
             section(
                 "Naming template",
                 column![
@@ -689,6 +772,17 @@ fn stat<'a>(label: &'a str, value: String) -> Element<'a, Message> {
         text(value).size(theme::LABEL).font(Font::MONOSPACE),
     ]
     .spacing(2.0)
+    .into()
+}
+
+/// A `label   value` row for the debug panel: a muted fixed-width label and a monospace value.
+fn dbg_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
+    row![
+        text(label).size(theme::SMALL).width(Length::Fixed(130.0)).style(|t| text::Style { color: Some(theme::muted(t)) }),
+        text(value).size(theme::SMALL).font(Font::MONOSPACE),
+    ]
+    .spacing(theme::SM)
+    .align_y(iced::Alignment::Center)
     .into()
 }
 

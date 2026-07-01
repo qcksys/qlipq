@@ -11,6 +11,17 @@ fn parse_fills_in_missing_fields() {
 }
 
 #[test]
+fn autoplay_defaults_on_and_debug_off() {
+    let cfg = AppConfig::default();
+    assert!(cfg.autoplay);
+    assert!(!cfg.debug);
+    // Missing keys keep the defaults; an explicit value is honored.
+    assert!(config_json::parse("{}").autoplay);
+    assert!(!config_json::parse(r#"{"autoplay":false}"#).autoplay);
+    assert!(config_json::parse(r#"{"debug":true}"#).debug);
+}
+
+#[test]
 fn parse_tolerates_empty_and_invalid_json() {
     assert_eq!(config_json::parse("").naming_template, "{date}_{source}_{name}");
     assert_eq!(config_json::parse("not json").naming_template, "{date}_{source}_{name}");
