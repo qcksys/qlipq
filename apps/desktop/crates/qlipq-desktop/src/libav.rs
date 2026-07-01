@@ -921,7 +921,7 @@ fn audio_segment(
                     let _ = t.dec.send_packet(Some(&pkt));
                     decode_into_pending(t, out_ch, out_rate, start);
                 }
-                if let Some(end) = mix_and_push(tracks, &mut audio, out_ch, out_rate, false, cmd_rx) {
+                if let Some(end) = mix_and_push(tracks, &mut audio, out_ch, out_rate, false, started, cmd_rx) {
                     return end;
                 }
                 // Start the device once the cushion is buffered (prime ≪ ring capacity, so mix_and_push
@@ -961,7 +961,7 @@ fn audio_segment(
                     let _ = t.dec.send_packet(None);
                     decode_into_pending(t, out_ch, out_rate, start);
                 }
-                if let Some(end) = mix_and_push(tracks, &mut audio, out_ch, out_rate, true, cmd_rx) {
+                if let Some(end) = mix_and_push(tracks, &mut audio, out_ch, out_rate, true, started, cmd_rx) {
                     return end;
                 }
                 // A clip shorter than the pre-roll cushion never crossed `prime`; start the device now
@@ -1051,16 +1051,24 @@ fn resample_into(swr: &mut Option<SwrContext>, frame: &AVFrame, out_ch: usize, o
 }
 
 /// Sum each track's pending samples (× its gain) into one interleaved buffer and push it to the ring
-/// (with backpressure). Streaming mode mixes only the length all tracks share, so they stay aligned;
-/// on EOF (`flush`) — or if a stalled track makes another's FIFO back up past ~1 s — it mixes
-/// everything, padding short tracks with silence. Returns `Some(SegEnd)` if seek/stop interrupts the
-/// blocking push.
+/// (with backpressure). Once playing, mixes only the length all tracks share so they stay aligned;
+/// on EOF (`flush`), before the device has `started`, or if a stalled track makes another's FIFO back
+/// up past ~1 s, it mixes everything, padding short tracks with silence. Returns `Some(SegEnd)` if
+/// seek/stop interrupts the blocking push.
+///
+/// `started` is critical for correctness: while the device is **paused** (pre-roll), it isn't draining
+/// the ring, so a full ring would never free up — blocking on it would hang the audio thread forever
+/// (silent, frozen clock). So before start we (a) mix `max_len` rather than the shared min, so a clip
+/// whose second audio stream is muxed far behind can't hold the min at 0 and starve the ring fill, and
+/// (b) never block: push what fits and return, letting the caller start the device once the ring
+/// reaches `prime`.
 fn mix_and_push(
     tracks: &mut [MixTrack],
     audio: &mut Option<AudioOut>,
     out_ch: usize,
     out_rate: i32,
     flush: bool,
+    started: bool,
     cmd_rx: &Receiver<Command>,
 ) -> Option<SegEnd> {
     let Some(out) = audio.as_mut() else {
@@ -1076,7 +1084,7 @@ fn mix_and_push(
     let backlog_cap = out_rate as usize * out_ch; // ~1 s; force a drain if a track stalls
     loop {
         let max_len = tracks.iter().map(|t| t.pending.len()).max().unwrap_or(0);
-        let n = if flush || max_len > backlog_cap {
+        let n = if flush || !started || max_len > backlog_cap {
             max_len
         } else {
             tracks.iter().map(|t| t.pending.len()).min().unwrap_or(0)
@@ -1098,6 +1106,16 @@ fn mix_and_push(
         while off < n {
             off += out.producer.push_slice(&mix[off..n]);
             if off < n {
+                if !started {
+                    // Device paused (pre-roll) → the ring won't drain, so don't block on it (that
+                    // deadlocks the player). Drain what we pushed and return; the caller starts the
+                    // device once the ring reaches `prime`, after which the blocking path below is safe.
+                    for t in tracks.iter_mut() {
+                        let take = t.pending.len().min(off);
+                        t.pending.drain(0..take);
+                    }
+                    return None;
+                }
                 // Ring full → audio is keeping pace; wait, but stay responsive to seek/stop.
                 if let Some(end) = poll_cmd(cmd_rx) {
                     return Some(end);
