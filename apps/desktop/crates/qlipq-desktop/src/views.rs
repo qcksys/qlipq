@@ -172,9 +172,9 @@ impl App {
 
         let transport = container(transport_row(ed)).width(Length::Fill).center_x(Length::Fill);
 
-        // Timeline.
+        // Timeline. The seeker draws the in/out window + endpoint markers on the bar itself.
         let dur = media.duration_sec.max(0.001);
-        let scrub = slider(0.0..=dur, ed.current_time.min(dur), Message::Seek).step(0.05).style(theme::slider_style);
+        let scrub = crate::seeker::seeker(dur, ed.current_time.min(dur), ed.trim_start, ed.trim_end, Message::Seek);
         let time_row = row![
             text_input("0:00.000", &ed.time_input)
                 .on_input(Message::TimestampEdited)
@@ -546,12 +546,21 @@ impl App {
 
         // HDR preview brightness — a gamma lift for HDR clips that tonemap too dark in the preview.
         let gamma = self.config.hdr_preview_gamma;
+        let default_gamma = AppConfig::default().hdr_preview_gamma;
+        let mut brightness_head = row![
+            text("Brightness").size(theme::LABEL).width(Length::Fill),
+            text(format!("gamma {gamma:.2}")).size(theme::SMALL).style(|t| text::Style { color: Some(theme::muted(t)) }),
+        ]
+        .spacing(theme::SM)
+        .align_y(iced::Alignment::Center);
+        // Only offer a reset when the value isn't already the default.
+        if (gamma - default_gamma).abs() > f64::EPSILON {
+            brightness_head = brightness_head.push(
+                button(text("Reset").size(theme::SMALL)).style(theme::btn_ghost).on_press(Message::ResetHdrPreviewGamma),
+            );
+        }
         let hdr_preview = column![
-            row![
-                text("Brightness").size(theme::LABEL).width(Length::Fill),
-                text(format!("gamma {gamma:.2}")).size(theme::SMALL).style(|t| text::Style { color: Some(theme::muted(t)) }),
-            ]
-            .align_y(iced::Alignment::Center),
+            brightness_head,
             slider(1.0..=3.0, gamma, Message::SetHdrPreviewGamma)
                 .step(0.05)
                 .on_release(Message::ApplyHdrPreviewGamma)

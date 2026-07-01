@@ -15,6 +15,7 @@ mod video;
 mod libav;
 mod export;
 mod log_ctx;
+mod seeker;
 
 // The in-process libav preview player (libplacebo HDR tonemap + synced cpal audio), exposing
 // `poll`/`dimensions`/`fps`/`position`/`try_seek` for the editor below.
@@ -345,6 +346,8 @@ enum Message {
     /// preview and persists.
     SetHdrPreviewGamma(f64),
     ApplyHdrPreviewGamma,
+    /// Restore the HDR preview brightness to its default and re-apply it to the preview.
+    ResetHdrPreviewGamma,
     SetPreviewRes(PreviewResChoice),
     ToggleAutoplay(bool),
     ToggleDebug(bool),
@@ -426,6 +429,10 @@ impl App {
         // Escape dismisses a modal; otherwise it exits fullscreen.
         if modal {
             subs.push(iced::event::listen_with(modal_escape_event));
+            // Enter confirms the delete prompt (matches its primary Delete button).
+            if self.delete_confirm.is_some() {
+                subs.push(iced::event::listen_with(delete_confirm_enter_event));
+            }
         } else if self.fullscreen {
             subs.push(iced::event::listen_with(fullscreen_escape_event));
         }
@@ -681,6 +688,17 @@ impl App {
                 }
             }
             Message::EditorKey(key, mods) => {
+                // Delete the highlighted clip: plain Delete asks first (Enter confirms), Shift+Delete
+                // removes it immediately. A focused text field captures the key first, so this only
+                // fires when the editor itself has focus.
+                if matches!(key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Delete)) {
+                    let Some(id) = self.selected_id.clone() else { return Task::none() };
+                    if mods.shift() {
+                        return self.delete_now(id);
+                    }
+                    self.delete_confirm = Some(id);
+                    return Task::none();
+                }
                 let snap = self.editor.as_ref().and_then(|e| e.media.as_ref()).map(|m| (m.fps.max(1.0), m.duration_sec));
                 let Some((fps, dur)) = snap else { return Task::none() };
                 let kb = &self.config.keybinds;
@@ -942,18 +960,7 @@ impl App {
             Message::RequestDelete(id) => self.delete_confirm = Some(id),
             Message::DeleteConfirm => {
                 if let Some(id) = self.delete_confirm.take() {
-                    if let Some(item) = self.items.iter().find(|i| i.id == id) {
-                        let path = item.path.clone();
-                        // The preview player + scrub decoder keep the file open, and Windows refuses
-                        // to delete an open file. Tear the editor down first so both are dropped —
-                        // Player::drop joins its decode threads synchronously, closing the handle —
-                        // before we attempt the delete below.
-                        if self.editor.as_ref().is_some_and(|e| e.item_id == id) {
-                            self.selected_id = None;
-                            self.editor = None;
-                        }
-                        return Task::perform(blocking(move || host::delete_file(&path)), move |r| Message::Deleted(id.clone(), r));
-                    }
+                    return self.delete_now(id);
                 }
             }
             Message::DeleteCancel => self.delete_confirm = None,
@@ -1037,6 +1044,17 @@ impl App {
             Message::ApplyHdrPreviewGamma => {
                 // Rebuild the scrub graph with the new gamma, persist, and refresh what's on screen
                 // (restart playback if playing, else re-extract the current frame).
+                self.reopen_scrubber();
+                let save = self.save_config_task();
+                let refresh = if self.editor.as_ref().map(|e| e.playing).unwrap_or(false) {
+                    self.play_from_current()
+                } else {
+                    self.request_frame()
+                };
+                return Task::batch([save, refresh]);
+            }
+            Message::ResetHdrPreviewGamma => {
+                self.config.hdr_preview_gamma = AppConfig::default().hdr_preview_gamma;
                 self.reopen_scrubber();
                 let save = self.save_config_task();
                 let refresh = if self.editor.as_ref().map(|e| e.playing).unwrap_or(false) {
@@ -1134,18 +1152,21 @@ impl App {
         }
         // Advance the playhead from the master clock (audio-synced, or a wall clock without audio);
         // fall back to one frame interval only if the clock reports no position. Then hard-stop at the
-        // known end so playback halts cleanly and never overruns or loops — `Ended` (decoder EOF) is
-        // the fallback when dur is 0.
+        // out-point so playback stays within the in/out window and never overruns or loops — `Ended`
+        // (decoder EOF) is the fallback when no out-point/duration is known.
         match position {
             Some(p) => ed.current_time = p,
             None => ed.current_time += 1.0 / fps,
         }
-        if let Some(dur) = dur {
-            if ed.current_time >= dur {
-                ed.current_time = dur;
-                ed.playing = false;
-                ed.player = None;
-            }
+        // Out-point is the stop; it's ≤ duration, and clamped to a real duration when one is known.
+        let stop_at = match dur {
+            Some(d) => ed.trim_end.min(d),
+            None => ed.trim_end,
+        };
+        if stop_at > 0.0 && ed.current_time >= stop_at {
+            ed.current_time = stop_at;
+            ed.playing = false;
+            ed.player = None;
         }
         sync_time_input(ed);
     }
@@ -1210,13 +1231,15 @@ impl App {
                 // Enabled tracks (audio-relative index + gain) drive the preview's monitor mixdown.
                 let audio_tracks: Vec<(i64, f64)> =
                     ed.audio.iter().filter(|r| r.enabled).map(|r| (r.index, r.volume)).collect();
-                Some((ed.item_id.clone(), ed.current_time, m.width, m.height, m.fps, m.duration_sec, ed.is_hdr, audio_tracks))
+                Some((ed.item_id.clone(), ed.current_time, m.width, m.height, m.fps, m.duration_sec, ed.is_hdr, audio_tracks, ed.trim_start, ed.trim_end))
             }
             _ => None,
         };
-        let Some((id, cur, mw, mh, mfps, dur, is_hdr, audio_tracks)) = snap else { return Task::none() };
-        // Restart from the top only when we know we're at the real end (avoid rewinding on a 0/unknown duration).
-        let start = if dur > 0.0 && cur >= dur { 0.0 } else { cur };
+        let Some((id, cur, mw, mh, mfps, _dur, is_hdr, audio_tracks, trim_start, trim_end)) = snap else { return Task::none() };
+        // Play only within the in/out window: (re)start at the in-point whenever the playhead sits
+        // outside it (before the in-point, or at/after the out-point). `trim_end` is 0 until the media
+        // loads, so guard on a real out-point before snapping.
+        let start = if trim_end > 0.0 && (cur < trim_start || cur >= trim_end) { trim_start } else { cur };
         let Some(path) = self.items.iter().find(|i| i.id == id).map(|i| i.path.clone()) else {
             return Task::none();
         };
@@ -1610,6 +1633,22 @@ impl App {
         Task::batch([self.save_config_task(), self.restart_watch_and_scan()])
     }
 
+    /// Delete a clip's file from disk (dropping the queue item follows on [`Message::Deleted`]). Used
+    /// by both the confirm dialog and the immediate Shift+Delete shortcut.
+    fn delete_now(&mut self, id: String) -> Task<Message> {
+        let Some(path) = self.items.iter().find(|i| i.id == id).map(|i| i.path.clone()) else {
+            return Task::none();
+        };
+        // The preview player + scrub decoder keep the file open, and Windows refuses to delete an open
+        // file. Tear the editor down first so both are dropped — Player::drop joins its decode threads
+        // synchronously, closing the handle — before we attempt the delete below.
+        if self.editor.as_ref().is_some_and(|e| e.item_id == id) {
+            self.selected_id = None;
+            self.editor = None;
+        }
+        Task::perform(blocking(move || host::delete_file(&path)), move |r| Message::Deleted(id.clone(), r))
+    }
+
     fn remove_item(&mut self, id: &str) {
         if let Some(pos) = self.items.iter().position(|i| i.id == id) {
             let path = self.items[pos].path.clone();
@@ -1810,6 +1849,16 @@ fn modal_escape_event(event: iced::Event, _status: iced::event::Status, _id: ice
     use iced::keyboard::{key::Named, Event::KeyPressed, Key};
     if let iced::Event::Keyboard(KeyPressed { key: Key::Named(Named::Escape), .. }) = event {
         Some(Message::DismissModal)
+    } else {
+        None
+    }
+}
+
+/// Enter key → confirm the open delete prompt. A plain `fn` for `listen_with`.
+fn delete_confirm_enter_event(event: iced::Event, _status: iced::event::Status, _id: iced::window::Id) -> Option<Message> {
+    use iced::keyboard::{key::Named, Event::KeyPressed, Key};
+    if let iced::Event::Keyboard(KeyPressed { key: Key::Named(Named::Enter), .. }) = event {
+        Some(Message::DeleteConfirm)
     } else {
         None
     }

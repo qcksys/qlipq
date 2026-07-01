@@ -22,11 +22,19 @@ use rsmpeg::avutil::{AVDictionary, AVFrame};
 use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi;
 
-use qlipq_core::config::OutputSettings;
+use qlipq_core::config::{ContainerFormat, OutputSettings};
 use qlipq_core::edit_spec::EditSpec;
 use qlipq_core::media::MediaInfo;
 use qlipq_ffmpeg::args::output_settings_to_encode;
 use qlipq_ffmpeg::hw::plan_hw_video;
+
+/// The partial-file path the muxer writes to before the atomic rename onto `output_path`. It must
+/// carry the container's real extension: libav picks the muxer from the file name, so a fixed
+/// `.part.mp4` suffix silently forces MP4 muxing even for an `.mkv` target (ignoring the configured
+/// container). Keeping the true extension makes the container setting take effect.
+fn temp_export_path(output_path: &str, container: ContainerFormat) -> String {
+    format!("{output_path}.part.{}", container.extension())
+}
 
 /// Decode + apply `spec`/`settings` edits + hardware-encode + mux `input_path` to `output_path`.
 /// `progress` is updated to the encoded fraction (0..1); set `cancel` to abort. Returns `Err` on any
@@ -44,7 +52,7 @@ pub fn run_export(
     cancel: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let _log = crate::log_ctx::enter(input_path);
-    let temp_path = format!("{output_path}.part.mp4");
+    let temp_path = temp_export_path(output_path, settings.container);
     // Stream-copy (remux) the video when nothing forces a re-encode (Original quality, no crop /
     // downscale / fps change) — a lossless, fast trim. Audio is still mixed/encoded. Otherwise
     // decode → filter → hardware-encode.
@@ -843,6 +851,14 @@ fn dict_from(opts: &[(&str, String)]) -> Option<AVDictionary> {
 mod tests {
     use super::*;
     use qlipq_core::edit_spec::{AudioTrackSpec, TrimSpec};
+
+    #[test]
+    fn temp_path_keeps_container_extension() {
+        // The muxer is chosen from the temp file's extension, so it must match the target container —
+        // otherwise an .mkv export is silently muxed as MP4.
+        assert_eq!(temp_export_path("E:/out/clip.mkv", ContainerFormat::Mkv), "E:/out/clip.mkv.part.mkv");
+        assert_eq!(temp_export_path("E:/out/clip.mp4", ContainerFormat::Mp4), "E:/out/clip.mp4.part.mp4");
+    }
 
     /// End-to-end export against a real file. Ignored by default; run with a real clip:
     ///   QLIPQ_TEST_INPUT="E:/clip.mkv" cargo test -p qlipq-desktop \
