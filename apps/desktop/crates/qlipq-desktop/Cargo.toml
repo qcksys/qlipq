@@ -1,0 +1,31 @@
+[package]
+name = "qlipq-desktop"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "qlipq"
+path = "src/main.rs"
+
+[dependencies]
+qlipq-core = { workspace = true }
+qlipq-ffmpeg = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+iced = { version = "0.14", features = ["tokio", "image", "wgpu", "advanced"] }
+tokio = { version = "1", features = ["rt", "time", "sync"] }
+notify = "8.2"
+dirs = "6"
+rfd = "0.17"
+open = "5"
+# In-process FFmpeg (libav): decode, libplacebo HDR preview, synced cpal audio, and hardware-encoded
+# export — the sole media engine. Linked against a shared FFmpeg 8.x dev build (see .cargo/config.toml).
+rsmpeg = { version = "0.18", default-features = false, features = ["ffmpeg8"] }
+cpal = { version = "0.18.1" }
+ringbuf = { version = "0.5.0" }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"

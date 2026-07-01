@@ -1,0 +1,15 @@
+[package]
+name = "qlipq-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+chrono = { workspace = true }
+schemars = "1.2.1"
+
+[dev-dependencies]
+chrono = { workspace = true }

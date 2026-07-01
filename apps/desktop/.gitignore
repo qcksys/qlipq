@@ -1,0 +1,11 @@
+# Rust / Cargo build output
+/target
+
+# Machine-specific build config (absolute paths to the local FFmpeg 8.x dev build for libav linking)
+/.cargo/config.toml
+
+# Backup files from `cargo fmt` / rustfmt
+**/*.rs.bk
+
+# MSVC debug info
+*.pdb

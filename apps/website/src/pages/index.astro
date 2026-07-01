@@ -3,12 +3,12 @@ import Base from "../layouts/Base.astro";
 const base = import.meta.env.BASE_URL.replace(/\/$/, "");
 ---
 
-<Base title="qlipq — recording queue & clip editor">
+<Base title="QlipQ — recording queue & clip editor">
   <section class="hero">
     <h1>Turn raw recordings into clips, fast.</h1>
     <p class="lead">
-      qlipq watches your capture folders, queues every new recording, and gives you a focused editor
-      to trim, crop, pick audio tracks, and export — all powered by FFmpeg.
+      QlipQ watches your capture folders, queues every new recording, and gives you a focused editor
+      to trim, crop, pick audio tracks, and export.
     </p>
     <div class="hero-actions">
       <a class="btn" href={`${base}/download`}>Download for desktop</a>
@@ -19,7 +19,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, "");
   <section class="features">
     <div class="card">
       <h3>📂 Folder watching</h3>
-      <p>Point qlipq at one or more folders. New recordings appear in the queue automatically.</p>
+      <p>Point QlipQ at one or more folders. New recordings appear in the queue automatically.</p>
     </div>
     <div class="card">
       <h3>✂️ Trim &amp; crop</h3>
@@ -34,8 +34,8 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, "");
       <p>Rename recordings with templates that read the date and game from OBS filenames.</p>
     </div>
     <div class="card">
-      <h3>⚡ FFmpeg exports</h3>
-      <p>Stream-copy when possible for instant trims, or re-encode when you crop or adjust audio.</p>
+      <h3>⚡ Fast exports</h3>
+      <p>Stream-copy the video for instant trims, or re-encode when you crop, change resolution or frame rate, or pick a non-Original quality. Audio is always mixed to a single track.</p>
     </div>
     <div class="card">
       <h3>🔭 Highlights (soon)</h3>
@@ -47,7 +47,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, "");
     <h2>How it works</h2>
     <ol class="prose">
       <li>Record gameplay with OBS (we recommend the <a href={`${base}/guide/obs-replay-buffer`}>replay buffer</a>).</li>
-      <li>qlipq adds each new file to the queue with its date and game parsed from the name.</li>
+      <li>QlipQ adds each new file to the queue with its date and game parsed from the name.</li>
       <li>Open a clip, trim and crop it, choose audio tracks, and export to your output folder.</li>
     </ol>
   </section>

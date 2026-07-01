@@ -1,0 +1,12 @@
+{
+  "name": "@qcksys/qlipq-obs-script",
+  "version": "0.0.0",
+  "private": true,
+  "description": "QlipQRenamer: an OBS companion Lua script that sorts recordings into per-game folders, based on oxypatic's original (obsproject.com/forum/resources/recorder.1926). Consumed by the qlipq website as a download.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./qlipq-renamer.lua": "./qlipq-renamer.lua",
+    "./package.json": "./package.json"
+  }
+}

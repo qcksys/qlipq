@@ -1,30 +1,22 @@
 ---
+import { getCollection } from "astro:content";
 import Base from "../../layouts/Base.astro";
 const base = import.meta.env.BASE_URL.replace(/\/$/, "");
-const guides = [
-  {
-    href: `${base}/guide/getting-started`,
-    title: "Getting started",
-    desc: "Install qlipq, point it at your capture folders, and export your first clip.",
-  },
-  {
-    href: `${base}/guide/obs-replay-buffer`,
-    title: "Set up the OBS replay buffer",
-    desc: "Capture the last few minutes on a hotkey — the ideal source for qlipq.",
-  },
-];
+const guides = (await getCollection("guide")).sort(
+  (a, b) => (a.data.order ?? 99) - (b.data.order ?? 99),
+);
 ---
 
-<Base title="qlipq user guide">
+<Base title="QlipQ user guide">
   <h1>User guide</h1>
   <p class="lead" style="color:var(--muted)">Everything you need to go from recording to clip.</p>
   <ul class="guide-list">
     {
       guides.map((guide) => (
         <li>
-          <a href={guide.href}>
-            <strong>{guide.title}</strong>
-            <p class="desc">{guide.desc}</p>
+          <a href={`${base}/guide/${guide.id}`}>
+            <strong>{guide.data.title}</strong>
+            <p class="desc">{guide.data.description}</p>
           </a>
         </li>
       ))
