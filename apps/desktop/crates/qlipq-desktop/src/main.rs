@@ -191,6 +191,11 @@ struct Editor {
     time_input: String,
     /// True while the user is typing in the timestamp field, so live playback doesn't clobber it.
     editing_time: bool,
+    /// Editable In/Out timestamp text (kept in sync with `trim_start`/`trim_end` unless being edited).
+    in_input: String,
+    out_input: String,
+    editing_in: bool,
+    editing_out: bool,
     /// Latest decoded preview frame, shared with the `video` shader widget (persistent GPU texture).
     shared_frame: video::SharedFrame,
     has_frame: bool,
@@ -206,6 +211,9 @@ struct Editor {
     playing: bool,
     /// Warm streaming decoder, present only while playing (dropped → decoder stopped).
     player: Option<PreviewPlayer>,
+    /// Set while a loop-back warm-seek to the in-point is in flight, so the tick doesn't spam seeks
+    /// until the clock re-anchors at the in-point.
+    awaiting_loop: bool,
     /// Warm single-frame decoder for scrubbing/paused preview, opened once per clip (a warm libav
     /// demuxer+decoder). Behind `Arc<Mutex>` so the blocking scrub task
     /// can drive it. `None` until the clip is probed, or if the decoder fails to open.
@@ -292,6 +300,14 @@ enum Message {
     TogglePlay,
     SetIn,
     SetOut,
+    /// Nudge the in/out point by ± seconds (the 0.5/1/5 s bump buttons).
+    BumpIn(f64),
+    BumpOut(f64),
+    /// Editable in/out timestamp fields: `*Edited` while typing, `*Submit` on Enter.
+    InEdited(String),
+    InSubmit,
+    OutEdited(String),
+    OutSubmit,
     ToggleCrop(bool),
     CropEdited(u8, String),
     AudioToggle(i64, bool),
@@ -523,6 +539,28 @@ impl App {
             if let Some(v) = o.audio_bitrate_kbps { out.audio_bitrate_kbps = v; }
         }
         out
+    }
+
+    /// Set the in-point to `secs`, clamped to `[0, out − 0.1s]` (out never moves), then persist +
+    /// refresh the editable field. Shared by Set-in, the ± bumps, and the text entry.
+    fn apply_trim_in(&mut self, secs: f64) {
+        if let Some(ed) = &mut self.editor {
+            ed.trim_start = secs.clamp(0.0, (ed.trim_end - 0.1).max(0.0));
+            ed.editing_in = false;
+            sync_inout_inputs(ed);
+        }
+        self.commit_spec();
+    }
+
+    /// Set the out-point to `secs`, clamped to `[in + 0.1s, duration]`, then persist + refresh the field.
+    fn apply_trim_out(&mut self, secs: f64) {
+        if let Some(ed) = &mut self.editor {
+            let max = ed.media.as_ref().map(|m| m.duration_sec).unwrap_or(ed.trim_end);
+            ed.trim_end = secs.clamp(ed.trim_start + 0.1, max.max(ed.trim_start + 0.1));
+            ed.editing_out = false;
+            sync_inout_inputs(ed);
+        }
+        self.commit_spec();
     }
 
     fn commit_spec(&mut self) {
@@ -779,18 +817,55 @@ impl App {
                 }
             }
             Message::SetIn => {
-                if let Some(ed) = &mut self.editor {
-                    ed.trim_start = ed.current_time.min(ed.trim_end - 0.1).clamp(0.0, ed.trim_end);
+                if let Some(t) = self.editor.as_ref().map(|e| e.current_time) {
+                    self.apply_trim_in(t);
                 }
-                self.commit_spec();
             }
             Message::SetOut => {
-                if let Some(ed) = &mut self.editor {
-                    let max = ed.media.as_ref().map(|m| m.duration_sec).unwrap_or(ed.trim_end);
-                    ed.trim_end = ed.current_time.max(ed.trim_start + 0.1).clamp(0.0, max);
+                if let Some(t) = self.editor.as_ref().map(|e| e.current_time) {
+                    self.apply_trim_out(t);
                 }
-                self.commit_spec();
             }
+            Message::BumpIn(delta) => {
+                if let Some(v) = self.editor.as_ref().map(|e| e.trim_start + delta) {
+                    self.apply_trim_in(v);
+                }
+            }
+            Message::BumpOut(delta) => {
+                if let Some(v) = self.editor.as_ref().map(|e| e.trim_end + delta) {
+                    self.apply_trim_out(v);
+                }
+            }
+            Message::InEdited(s) => {
+                if let Some(ed) = &mut self.editor {
+                    ed.editing_in = true;
+                    ed.in_input = s;
+                }
+            }
+            Message::InSubmit => match self.editor.as_ref().and_then(|e| parse_timestamp(&e.in_input)) {
+                Some(v) => self.apply_trim_in(v),
+                None => {
+                    if let Some(ed) = &mut self.editor {
+                        ed.editing_in = false;
+                        sync_inout_inputs(ed); // invalid input → snap back to the current in-point
+                    }
+                }
+            },
+            Message::OutEdited(s) => {
+                if let Some(ed) = &mut self.editor {
+                    ed.editing_out = true;
+                    ed.out_input = s;
+                }
+            }
+            Message::OutSubmit => match self.editor.as_ref().and_then(|e| parse_timestamp(&e.out_input)) {
+                Some(v) => self.apply_trim_out(v),
+                None => {
+                    if let Some(ed) = &mut self.editor {
+                        ed.editing_out = false;
+                        sync_inout_inputs(ed);
+                    }
+                }
+            },
             Message::ToggleCrop(on) => {
                 if let Some(ed) = &mut self.editor {
                     ed.crop_enabled = on;
@@ -1151,22 +1226,34 @@ impl App {
             return;
         }
         // Advance the playhead from the master clock (audio-synced, or a wall clock without audio);
-        // fall back to one frame interval only if the clock reports no position. Then hard-stop at the
-        // out-point so playback stays within the in/out window and never overruns or loops — `Ended`
-        // (decoder EOF) is the fallback when no out-point/duration is known.
+        // fall back to one frame interval only if the clock reports no position.
         match position {
             Some(p) => ed.current_time = p,
             None => ed.current_time += 1.0 / fps,
         }
-        // Out-point is the stop; it's ≤ duration, and clamped to a real duration when one is known.
+        // Keep playback inside the in/out window by looping: at the out-point, warm-seek back to the
+        // in-point and keep playing (a continuous preview of the trim). Looping — rather than stopping —
+        // means Play/pause always toggles cleanly instead of leaving a "stopped at out" state that the
+        // next Play would restart from the in-point. `awaiting_loop` suppresses repeat seeks until the
+        // clock re-anchors at the in-point. The out-point is ≤ duration (clamped on load / by SetOut).
         let stop_at = match dur {
             Some(d) => ed.trim_end.min(d),
             None => ed.trim_end,
         };
         if stop_at > 0.0 && ed.current_time >= stop_at {
-            ed.current_time = stop_at;
-            ed.playing = false;
-            ed.player = None;
+            if !ed.awaiting_loop {
+                let looped = ed.player.as_ref().map(|p| p.try_seek(ed.trim_start)).unwrap_or(false);
+                if looped {
+                    ed.awaiting_loop = true;
+                } else {
+                    // No warm decoder to loop with (e.g. it just ended) — stop cleanly at the out-point.
+                    ed.current_time = stop_at;
+                    ed.playing = false;
+                    ed.player = None;
+                }
+            }
+        } else {
+            ed.awaiting_loop = false;
         }
         sync_time_input(ed);
     }
@@ -1252,6 +1339,7 @@ impl App {
             ed.playing = started;
             ed.player = player;
             ed.frame_dirty = false;
+            ed.awaiting_loop = false;
         }
         if started { Task::none() } else { self.request_frame() }
     }
@@ -1273,6 +1361,10 @@ impl App {
             current_time: 0.0,
             time_input: format_timestamp(0.0),
             editing_time: false,
+            in_input: format_timestamp(0.0),
+            out_input: format_timestamp(0.0),
+            editing_in: false,
+            editing_out: false,
             shared_frame: video::new_shared_frame(),
             has_frame: false,
             is_hdr: false,
@@ -1282,6 +1374,7 @@ impl App {
             extracting: false,
             playing: false,
             player: None,
+            awaiting_loop: false,
             scrubber: None,
             exporting: false,
             progress: Arc::new(Mutex::new(0.0)),
@@ -1318,6 +1411,7 @@ impl App {
                 let dur = media.duration_sec.max(0.0);
                 ed.trim_start = spec.trim.as_ref().map(|t| t.start_sec).unwrap_or(0.0).clamp(0.0, dur);
                 ed.trim_end = spec.trim.as_ref().map(|t| t.end_sec).unwrap_or(dur).clamp(ed.trim_start, dur);
+                sync_inout_inputs(ed);
                 if let Some(c) = &spec.crop {
                     ed.crop_enabled = true;
                     ed.crop = c.clone();
@@ -1831,6 +1925,17 @@ fn parse_timestamp(text: &str) -> Option<f64> {
 fn sync_time_input(ed: &mut Editor) {
     if !ed.editing_time {
         ed.time_input = format_timestamp(ed.current_time);
+    }
+}
+
+/// Refresh the editable In/Out timestamp fields from `trim_start`/`trim_end`, unless the user is
+/// mid-edit in one (so typing isn't clobbered).
+fn sync_inout_inputs(ed: &mut Editor) {
+    if !ed.editing_in {
+        ed.in_input = format_timestamp(ed.trim_start);
+    }
+    if !ed.editing_out {
+        ed.out_input = format_timestamp(ed.trim_end);
     }
 }
 

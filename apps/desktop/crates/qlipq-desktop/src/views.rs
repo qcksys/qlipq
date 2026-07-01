@@ -186,16 +186,19 @@ impl App {
         ]
         .spacing(theme::SM)
         .align_y(iced::Alignment::Center);
-        let inout_row = row![
-            text(format!("In {}", format_timestamp(ed.trim_start))).size(theme::META).font(Font::MONOSPACE).style(|t| text::Style { color: Some(theme::muted(t)) }),
-            button(text("Set in").size(theme::SMALL)).style(theme::btn_secondary).on_press(Message::SetIn),
+        let length = row![
+            text("Length").size(theme::META).style(|t| text::Style { color: Some(theme::muted(t)) }),
             text(datetimes::format_duration(ed.trim_end - ed.trim_start)).size(theme::LABEL).font(theme::FONT_MEDIUM),
-            button(text("Set out").size(theme::SMALL)).style(theme::btn_secondary).on_press(Message::SetOut),
-            text(format!("Out {}", format_timestamp(ed.trim_end))).size(theme::META).font(Font::MONOSPACE).style(|t| text::Style { color: Some(theme::muted(t)) }),
         ]
         .spacing(theme::SM)
         .align_y(iced::Alignment::Center);
-        let timeline = column![scrub, time_row, inout_row].spacing(theme::SM);
+        let inout = column![
+            trim_row("In", &ed.in_input, Message::InEdited, Message::InSubmit, Message::BumpIn, Message::SetIn),
+            trim_row("Out", &ed.out_input, Message::OutEdited, Message::OutSubmit, Message::BumpOut, Message::SetOut),
+            length,
+        ]
+        .spacing(theme::XS);
+        let timeline = column![scrub, time_row, inout].spacing(theme::SM);
 
         // Options laid out in two columns: media edits (crop, audio) on the left, output + metadata
         // (quality override, tags) on the right. The two toggle cards (Crop, Override) head each column.
@@ -879,6 +882,35 @@ fn empty_state<'a>(msg: &'a str) -> Element<'a, Message> {
         .center_x(Length::Fill)
         .center_y(Length::Fill)
         .into()
+}
+
+/// One in/out editing row: label, −5/−1/−0.5 s bumps, an editable timestamp, +0.5/+1/+5 s bumps, and
+/// a Set button that captures the current playhead. `bump`/`on_edit` are the message constructors.
+fn trim_row<'a>(
+    label: &'a str,
+    value: &'a str,
+    on_edit: fn(String) -> Message,
+    on_submit: Message,
+    bump: fn(f64) -> Message,
+    set_msg: Message,
+) -> Element<'a, Message> {
+    let b = |t: &'static str, delta: f64| {
+        button(text(t).size(theme::SMALL).font(Font::MONOSPACE)).style(theme::btn_secondary).on_press(bump(delta))
+    };
+    row![
+        text(label).size(theme::LABEL).font(theme::FONT_MEDIUM).width(Length::Fixed(30.0)),
+        b("−5", -5.0),
+        b("−1", -1.0),
+        b("−0.5", -0.5),
+        text_input("0:00.000", value).on_input(on_edit).on_submit(on_submit).font(Font::MONOSPACE).style(theme::input).width(Length::Fixed(100.0)),
+        b("+0.5", 0.5),
+        b("+1", 1.0),
+        b("+5", 5.0),
+        button(text("Set").size(theme::SMALL)).style(theme::btn_secondary).on_press(set_msg),
+    ]
+    .spacing(theme::XS)
+    .align_y(iced::Alignment::Center)
+    .into()
 }
 
 fn num_field<'a>(label: &'a str, value: i64, on_input: impl Fn(String) -> Message + 'a) -> Element<'a, Message> {
