@@ -3,7 +3,8 @@
 # The crates here are internal path-deps, NOT published to crates.io — so versions are derived
 # from git tags (`git_only`) and `cargo publish` is skipped.
 [workspace]
-git_only = true # version from git tags; never run `cargo publish`
+git_only = true # version from git tags (not the crates.io registry)
+publish = false # never run `cargo publish` — these crates are internal, not on crates.io
 git_release_enable = false # don't create a GitHub release per crate…
 git_tag_enable = false # …and no per-crate git tag by default
 

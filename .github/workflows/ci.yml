@@ -23,6 +23,11 @@ jobs:
 
       - run: vp install
 
+      # Generate Astro's `.astro/types.d.ts` (astro:content + `?raw` module types). It's gitignored,
+      # so without this `vp check` fails to resolve those virtual modules on a fresh checkout.
+      - name: Generate Astro types
+        run: vp run qlipq-website#sync
+
       - name: Format, lint & type check
         run: vp check
 
